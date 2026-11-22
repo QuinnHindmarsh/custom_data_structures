@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cassert>
 #include <cmath>
+#include <functional>
 
 template <typename K, typename V>
 struct slot
@@ -33,28 +34,29 @@ public:
             rehash(m_capacity * resize_factor);
         }
 
+        V *existing_value = find(key);
+        if (existing_value != nullptr)
+        {
+            *existing_value = value; // update existing key
+            return;
+        }
+
         size_t idx{index(key)};
-        size_t dib{0};
+        slot<K, V> cur{key, value, 0, true};
         while (m_slots[idx].occupied)
         {
-            if (m_eq(m_slots[idx].key, key)) // updating existing key
+            if (cur.DIB > m_slots[idx].DIB)
             {
-                m_slots[idx].value = value;
-                return;
+                std::swap(cur, m_slots[idx]);
             }
-            // TODO: test with other probing (quadratic, double hashing)
+
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
             ++dib;
         }
-        // TODO: If V or K are large then we should consider moving them instead of copying
-        m_slots[idx].key = key;
-        m_slots[idx].value = value;
-        m_slots[idx].occupied = true;
-        m_slots[idx].DIB = dib;
         ++m_size;
     }
 
-    V *find(K key)
+    V *find(K key) const
     { // return nullptr if not found
         size_t idx{index(key)};
         size_t probe_distance{0};
@@ -102,6 +104,7 @@ public:
 
         while (m_slots[idx].occupied && m_slots[idx].DIB > 0) // backwards shift deletion
         {
+
             m_slots[last_idx] = m_slots[idx];
             m_slots[last_idx].DIB--;
             last_idx = idx;
@@ -111,16 +114,16 @@ public:
     }
 
 private:
-    size_t m_size{0};
+    static_assert(resize_factor > 1 && (resize_factor & (resize_factor - 1)) == 0 && "resize factor must be > 1, and a power of 2 as hash & (cap -1) is used over %");
+    static_assert(max_load_factor > 0.0f && max_load_factor < 1.0f && "max load factor must be between 0 and 1");
     size_t m_capacity{};
+    size_t m_size{0};
     int m_log_2_cap{};
 
     std::vector<slot<K, V>> m_slots{};
 
     eq m_eq{};
     hash m_hash{};
-
-    static_assert(resize_factor > 1 && (resize_factor & (resize_factor - 1)) == 0 && "resize factor must be > 1, and a power of 2 as hash & (cap -1) is used over %");
 
     std::size_t index(const K &key) const
     {
