@@ -13,7 +13,19 @@ concept Hashable = requires(T a, T b) {
     { a == b } -> std::convertible_to<bool>;
 };
 
-template <Hashable K, typename V>
+template <typename T>
+concept IntegralKey = Hashable<T> && std::integral<T>;
+
+template <Hashable K, typename V> // recommputing hash for non intergals can be expensive - specialisaiton allows us to store this
+struct slot
+{
+    K key{};
+    V value{};
+    uint64_t hash {} 
+    size_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
+};
+
+template <IntegralKey K, typename V>
 struct slot
 {
     K key{};
@@ -41,6 +53,8 @@ public:
     {
         assert(capacity >= 2 && (capacity & (capacity - 1)) == 0 && "capacity must be a power of 2");
     };
+
+    
     void insert(K key, V value)
     {
         auto [existing_idx, probe_distance] = insertion_idx(key);
