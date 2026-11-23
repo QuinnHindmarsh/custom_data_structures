@@ -6,15 +6,14 @@
 #include <bit>
 #include <utility>
 
-// TODO: using dib 0 as empty allows me to reduce size of slot -> when am i ever going to have more then 2^32 chunks
 template <typename K, typename V>
 struct slot
 {
     K key{};
     V value{};
-    size_t DIB{0}; // distance to initial bucket
-    bool occupied{false};
+    size_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
 };
+// TODO: struct of vectors?
 
 template <typename K, typename V, typename hash = std::hash<K>, typename eq = std::equal_to<K>, const int resize_factor = 2, const float max_load_factor = 0.75f>
 class open_map
@@ -25,8 +24,9 @@ public:
     {
         assert(capacity >= 2 && (capacity & (capacity - 1)) == 0 && "capacity must be a power of 2");
 
-        m_slots = std::vector<slot<K, V>>(m_capacity);
-        m_log_2_cap = std::countr_zero(m_capacity);
+        m_slots{std::vector<slot<K, V>>(m_capacity)};
+        m_log_2_cap{std::countr_zero(m_capacity)};
+        m_resize_at static_cast<int> { m_capacity *max_load_factor }
     }
     // TODO: probes table twice, optimise
     void insert(K key, V value)
@@ -38,8 +38,7 @@ public:
             *existing_value = value; // update existing key
             return;
         }
-        // TODO: make m_resive_at to avoid float conversions every time
-        if (m_size + 1 > m_capacity * max_load_factor)
+        if (m_size + 1 > m_resize_at)
         {
             rehash(m_capacity * resize_factor);
         }
@@ -48,8 +47,8 @@ public:
         ++m_size;
     }
 
-    V *find(const K &key)
-    { // return nullptr if not found
+    V *find(const K &key) // return nullptr if not found
+    {
         return const_cast<V *>(std::as_const(*this).find(key));
     }
 
@@ -57,15 +56,15 @@ public:
     {
 
         size_t idx{index(key)};
-        size_t probe_distance{0};
+        size_t probe_distance{1};
 
-        while (m_slots[idx].occupied) // backwards shift deletion, so we can stop searching when we hit an empty slot
+        while (m_slots[idx].DIB > 0) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
             if (m_eq(m_slots[idx].key, key))
             {
                 return &m_slots[idx].value;
             }
-            if (m_slots[idx].DIB < probe_distance) // if the DIB is 0, then we have reached the end of the cluster and the key is not in the map
+            if (m_slots[idx].DIB < probe_distance) // if the DIB is 1, then we have reached the end of the cluster and the key is not in the map
             {
                 return nullptr;
             }
@@ -78,14 +77,16 @@ public:
     void erase(const K &key)
     {
         size_t idx{index(key)};
-        size_t probe_distance{0};
+        size_t probe_distance{1};
+
         while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
-            if (!m_slots[idx].occupied)
+            
+          if (m_slots[idx].DIB == 0)
                 return;
             if (m_eq(m_slots[idx].key, key))
             {
-                m_slots[idx].occupied = false;
+                m_slots[idx].DIB = false;
                 --m_size;
                 break;
             }
@@ -98,7 +99,7 @@ public:
         size_t last_idx{idx};
         idx = (idx + 1) & (m_capacity - 1);
 
-        while (m_slots[idx].occupied && m_slots[idx].DIB > 0) // backwards shift deletion
+        while (m_slots[idx].DIB > 1) // backwards shift deletion
         {
 
             m_slots[last_idx] = std::move(m_slots[idx]);
@@ -106,7 +107,7 @@ public:
             last_idx = idx;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
         }
-        m_slots[last_idx].occupied = false;
+        m_slots[last_idx].DIB = 0;
     }
 
     // TODO: I dont resize to a lower size ever
@@ -117,6 +118,7 @@ private:
     size_t m_capacity{};
     size_t m_size{0};
     int m_log_2_cap{};
+    size_t m_resize_at{};
 
     std::vector<slot<K, V>> m_slots{};
 
@@ -133,7 +135,7 @@ private:
     void insert_no_check(K &&key, V &&value)
     {
         size_t idx{index(key)};
-        slot<K, V> cur{std::move(key), std::move(value), 0, true};
+        slot<K, V> cur{std::move(key), std::move(value), 1, true};
 
         while (m_slots[idx].occupied)
         {
@@ -154,11 +156,12 @@ private:
         std::vector<slot<K, V>> old_slots = std::move(m_slots);
         m_slots = std::vector<slot<K, V>>(new_capacity);
         m_capacity = new_capacity;
+        m_resize_at = static_cast<int>(m_capacity * max_load_factor);
         m_log_2_cap = std::countr_zero(m_capacity);
 
         for (auto &s : old_slots)
         {
-            if (s.occupied)
+            if (s.DIB)
             {
                 insert_no_check(std::move(s.key), std::move(s.value));
             }
