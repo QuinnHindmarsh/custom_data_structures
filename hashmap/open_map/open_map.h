@@ -6,6 +6,7 @@
 #include <bit>
 #include <utility>
 #include <concepts>
+#include <type_traits>
 
 template <typename T>
 concept Hashable = requires(T a, T b) {
@@ -24,7 +25,7 @@ struct slot
     K key{};
     V value{};
     uint64_t hash{};
-    size_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
+    uint8_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
 };
 
 // integral keys are cheap to hash and compare - don't waste space storing the hash
@@ -33,17 +34,14 @@ struct slot<K, V>
 {
     K key{};
     V value{};
-    size_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
+    uint8_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
 };
 
 /*
 OPTIMISATIONS/imrpovements
 TODO: reduce the size of DIB? It doesnt really need to be 64 bits but technically chains could be that long, in practice it wouldnt relaly ever happen. but would be undefined if it did
-TODO: I could do a struct slots that holds a vector of key,dib pairs, and a vector of values. This allows more elements to be loaded in the cache line as DIB and key need to be checked much more then value
-TODO: for non athermaatic types use the current slot, for arithmatic ones overload and store the hash
-TODO: I never resize downwards
-TODO: ensure keys are hashable
-TODO: take large keys as a reffernce in insert then make a copy if a insertion is needed and dont if only a update is needed
+TODO: I could do a struct slots that holds a vector of key,dib pairs (hash/dib pairs for non integrals), and a vector of values. This allows more elements to be loaded in the cache line as DIB and key need to be checked much more then value
+TODO: I never resize do`wnwards
 
 */
 
@@ -57,28 +55,41 @@ public:
         assert(capacity >= 2 && (capacity & (capacity - 1)) == 0 && "capacity must be a power of 2");
     };
 
-    
-    void insert(K key, V value)
+    // forwarding references: nothing is copied up front.
+    //   update -> key is only read (never copied), value is copied/moved into the existing slot
+    //   insert -> key and value are copied (lvalue) or moved (rvalue) straight into the new slot
+    template <typename KArg, typename VArg>
+        requires std::constructible_from<K, KArg> && std::constructible_from<V, VArg> && std::assignable_from<V &, VArg>
+    void insert(KArg &&key, VArg &&value)
     {
-        const uint64_t h = m_hash(key);
-        auto [existing_idx, probe_distance] = insertion_idx(key, h);
-        if (slot_matches(m_slots[existing_idx], key, h))
+        if constexpr (!std::same_as<std::remove_cvref_t<KArg>, K>)
         {
-            m_slots[existing_idx].value = std::move(value);
-            return;
+            // different type, e.g. const char* for a std::string key. Build the K once here,
+            // otherwise m_hash and m_eq would each make their own temporary K
+            insert(K(std::forward<KArg>(key)), std::forward<VArg>(value));
         }
-
-        if (m_size + 1 > m_grow_at)
+        else
         {
-            // rehashing makes the existing index and probe distance no longer valid
-            rehash(m_capacity * resize_factor);
-            insert_no_check(make_slot(std::move(key), std::move(value), h, 1), index_from_hash(h));
+            const uint64_t h = m_hash(key);
+            auto [existing_idx, probe_distance] = insertion_idx(key, h);
+            if (slot_matches(m_slots[existing_idx], key, h))
+            {
+                m_slots[existing_idx].value = std::forward<VArg>(value);
+                return;
+            }
+
+            if (m_size + 1 > m_grow_at)
+            {
+                // rehashing makes the existing index and probe distance no longer valid
+                rehash(m_capacity * resize_factor);
+                insert_no_check(make_slot(std::forward<KArg>(key), std::forward<VArg>(value), h, 1), index_from_hash(h));
+                ++m_size;
+                return;
+            }
+
+            insert_no_check(make_slot(std::forward<KArg>(key), std::forward<VArg>(value), h, probe_distance), existing_idx);
             ++m_size;
-            return;
         }
-
-        insert_no_check(make_slot(std::move(key), std::move(value), h, probe_distance), existing_idx);
-        ++m_size;
     }
 
     V *find(const K &key) // return nullptr if not found
@@ -179,12 +190,15 @@ private:
             return m_hash(s.key);
     }
 
-    static slot_t make_slot(K &&key, V &&value, [[maybe_unused]] uint64_t h, size_t dib)
+    // this is the single point where the key/value are copied or moved into the map.
+    // K(...)/V(...) instead of bare braces so e.g. an int value for a double V isn't a narrowing error
+    template <typename KArg, typename VArg>
+    static slot_t make_slot(KArg &&key, VArg &&value, [[maybe_unused]] uint64_t h, size_t dib)
     {
         if constexpr (stores_hash)
-            return slot_t{std::move(key), std::move(value), h, dib};
+            return slot_t{K(std::forward<KArg>(key)), V(std::forward<VArg>(value)), h, dib};
         else
-            return slot_t{std::move(key), std::move(value), dib};
+            return slot_t{K(std::forward<KArg>(key)), V(std::forward<VArg>(value)), dib};
     }
 
     // robin hood insert starting at idx, cur.DIB must already be the probe distance for idx.
