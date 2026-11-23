@@ -16,17 +16,20 @@ concept Hashable = requires(T a, T b) {
 template <typename T>
 concept IntegralKey = Hashable<T> && std::integral<T>;
 
-template <Hashable K, typename V> // recommputing hash for non intergals can be expensive - specialisaiton allows us to store this
+// primary template: non-integral keys are assumed large/expensive to hash and compare,
+// so the full hash is stored and compared before calling eq, and reused on rehash
+template <Hashable K, typename V>
 struct slot
 {
     K key{};
     V value{};
-    uint64_t hash {} 
+    uint64_t hash{};
     size_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
 };
 
+// integral keys are cheap to hash and compare - don't waste space storing the hash
 template <IntegralKey K, typename V>
-struct slot
+struct slot<K, V>
 {
     K key{};
     V value{};
@@ -57,8 +60,9 @@ public:
     
     void insert(K key, V value)
     {
-        auto [existing_idx, probe_distance] = insertion_idx(key);
-        if (m_slots[existing_idx].DIB != 0 && m_eq(m_slots[existing_idx].key, key))
+        const uint64_t h = m_hash(key);
+        auto [existing_idx, probe_distance] = insertion_idx(key, h);
+        if (slot_matches(m_slots[existing_idx], key, h))
         {
             m_slots[existing_idx].value = std::move(value);
             return;
@@ -68,12 +72,12 @@ public:
         {
             // rehashing makes the existing index and probe distance no longer valid
             rehash(m_capacity * resize_factor);
-            insert_no_check(std::move(key), std::move(value));
+            insert_no_check(make_slot(std::move(key), std::move(value), h, 1), index_from_hash(h));
             ++m_size;
             return;
         }
 
-        insert_no_check(std::move(key), std::move(value), existing_idx, probe_distance);
+        insert_no_check(make_slot(std::move(key), std::move(value), h, probe_distance), existing_idx);
         ++m_size;
     }
 
@@ -84,8 +88,9 @@ public:
 
     const V *find(const K &key) const
     {
-        auto [idx, _probe_cnt] = insertion_idx(key);
-        if (m_slots[idx].DIB > 0 && m_eq(m_slots[idx].key, key))
+        const uint64_t h = m_hash(key);
+        auto [idx, _probe_cnt] = insertion_idx(key, h);
+        if (slot_matches(m_slots[idx], key, h))
         {
             return &m_slots[idx].value;
         }
@@ -94,14 +99,15 @@ public:
 
     void erase(const K &key)
     {
-        size_t idx{index(key)};
+        const uint64_t h = m_hash(key);
+        size_t idx{index_from_hash(h)};
         size_t probe_distance{1};
 
         while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
             if (m_slots[idx].DIB == 0)
                 return;
-            if (m_eq(m_slots[idx].key, key))
+            if (slot_matches(m_slots[idx], key, h))
             {
                 break;
             }
@@ -139,36 +145,52 @@ private:
     eq m_eq{};
     hash m_hash{};
 
-    size_t index(const K &key) const
+    using slot_t = slot<K, V>;
+
+    // true when the slot specialisation stores the hash (i.e. key is assumed large / expensive to compare)
+    static constexpr bool stores_hash = requires(slot_t s) { s.hash; };
+
+    size_t index_from_hash(uint64_t hash_value) const
     {
-        std::uint64_t hash_value = m_hash(key);
         // Fibonachi hashing
         return static_cast<size_t>((hash_value * 0x9E3779B97F4A7C15ull) >> m_shift); // returns top log2(m_capacity) bits of the hash value, which is equivalent to hash_value % m_capacity when m_capacity is a power of 2
     }
 
-    void insert_no_check(K &&key, V &&value, size_t idx, size_t probe_length)
+    // occupied + same key. When the hash is stored, compare it first so the (expensive) eq is
+    // only called on a likely match
+    bool slot_matches(const slot_t &s, const K &key, uint64_t h) const
     {
-        slot<K, V> cur{std::move(key), std::move(value), probe_length};
-
-        while (m_slots[idx].DIB > 0)
+        if (s.DIB == 0)
+            return false;
+        if constexpr (stores_hash)
         {
-            if (cur.DIB > m_slots[idx].DIB)
-            {
-                std::swap(cur, m_slots[idx]);
-            }
-            idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
-
-            ++cur.DIB;
+            if (s.hash != h)
+                return false;
         }
-        m_slots[idx] = std::move(cur);
-    };
+        return m_eq(s.key, key);
+    }
 
-    // allows us to avoid comparasions when rehashing
-    void insert_no_check(K &&key, V &&value)
+    // hash of an already stored slot - free when stored, recomputed otherwise
+    uint64_t slot_hash(const slot_t &s) const
     {
-        size_t idx = index(key);
-        slot<K, V> cur{std::move(key), std::move(value), 1};
+        if constexpr (stores_hash)
+            return s.hash;
+        else
+            return m_hash(s.key);
+    }
 
+    static slot_t make_slot(K &&key, V &&value, [[maybe_unused]] uint64_t h, size_t dib)
+    {
+        if constexpr (stores_hash)
+            return slot_t{std::move(key), std::move(value), h, dib};
+        else
+            return slot_t{std::move(key), std::move(value), dib};
+    }
+
+    // robin hood insert starting at idx, cur.DIB must already be the probe distance for idx.
+    // no key comparisons - caller guarantees the key is not present
+    void insert_no_check(slot_t &&cur, size_t idx)
+    {
         while (m_slots[idx].DIB > 0)
         {
             if (cur.DIB > m_slots[idx].DIB)
@@ -195,14 +217,16 @@ private:
         {
             if (s.DIB)
             {
-                insert_no_check(std::move(s.key), std::move(s.value));
+                const size_t idx = index_from_hash(slot_hash(s)); // stored hash reused, no rehashing of the key
+                s.DIB = 1;
+                insert_no_check(std::move(s), idx);
             }
         }
     }
 
-    std::pair<size_t, size_t> insertion_idx(const K &key) const
+    std::pair<size_t, size_t> insertion_idx(const K &key, uint64_t h) const
     {
-        size_t idx{index(key)};
+        size_t idx{index_from_hash(h)};
         size_t probe_distance{1};
 
         while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
@@ -211,7 +235,7 @@ private:
             {
                 return {idx, probe_distance};
             }
-            if (m_eq(m_slots[idx].key, key))
+            if (slot_matches(m_slots[idx], key, h))
             {
                 return {idx, probe_distance};
             }
