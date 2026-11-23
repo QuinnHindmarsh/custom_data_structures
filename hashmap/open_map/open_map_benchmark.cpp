@@ -2,7 +2,7 @@
 //
 // open_map is run once per max load factor (0.75, 0.80, 0.85, 0.90, 0.95), so each table shows which one is fastest.
 //
-// For each key type (char, uint32_t, uint64_t, std::string) and map size N, every map runs the same phases:
+// For each key type (uint32_t, uint64_t, std::string) at N = 1,000,000, every map runs the same phases:
 //   insert      N new keys into an empty map (includes all rehashes)
 //   update      the same N keys again (key already present, value overwritten)
 //   find hit    N lookups of present keys, shuffled order
@@ -11,9 +11,8 @@
 //   erase hit   erase all N keys, shuffled order
 //   mixed       2N random ops over present + absent keys: 50% find, 25% insert, 25% erase
 //
-// Small maps (e.g. char keys, N <= 128) finish a phase in well under a microsecond, which is too short to time.
-// So every measurement does at least ~1M ops: a pool of up to 64 small maps is filled side by side
-// (pool stays small enough to sit in cache), and the whole cycle is repeated `passes` times.
+// Every measurement does at least ~1M ops. For small N, a pool of up to 64 maps is filled side by side
+// and the cycle repeated `passes` times. At N = 1M that is just 1 map x 1 pass.
 //
 // Each measurement is repeated a few times and the BEST time is reported (least noise).
 // A checksum of every value found is printed per map. If they differ, a map is returning wrong results.
@@ -81,8 +80,6 @@ void map_erase(std::unordered_map<K, value_t> &m, const K &k) { m.erase(k); }
 template <typename K>
 K make_key(std::uint64_t x);
 template <>
-char make_key<char>(std::uint64_t x) { return static_cast<char>(x); }
-template <>
 std::uint32_t make_key<std::uint32_t>(std::uint64_t x) { return static_cast<std::uint32_t>(x); }
 template <>
 std::uint64_t make_key<std::uint64_t>(std::uint64_t x) { return x; }
@@ -118,7 +115,7 @@ struct Workload
     std::vector<Op> mixed;
 };
 
-// Needs 2N distinct keys, so for char keys N must be <= 128.
+// Needs 2N distinct keys.
 template <typename K>
 Workload<K> make_workload(std::size_t n, std::uint64_t seed)
 {
@@ -391,14 +388,10 @@ int main(int argc, char **argv)
     const std::string out_path = argc > 1 ? argv[1] : "open_map_benchmark_results.md";
     std::vector<Result> results;
 
-    for (std::size_t n : {16, 64, 128}) // char has 256 values, and absent keys need N of them too
-        results.push_back(bench<char>("char", n));
-    for (std::size_t n : {1'000, 100'000, 1'000'000})
-        results.push_back(bench<std::uint32_t>("uint32_t", n));
-    for (std::size_t n : {1'000, 100'000, 1'000'000})
-        results.push_back(bench<std::uint64_t>("uint64_t", n));
-    for (std::size_t n : {1'000, 100'000, 1'000'000})
-        results.push_back(bench<std::string>("std::string", n));
+    constexpr std::size_t n = 1'000'000;
+    results.push_back(bench<std::uint32_t>("uint32_t", n));
+    results.push_back(bench<std::uint64_t>("uint64_t", n));
+    results.push_back(bench<std::string>("std::string", n));
 
     std::ofstream out{out_path};
     if (!out)
