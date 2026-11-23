@@ -5,8 +5,15 @@
 #include <functional>
 #include <bit>
 #include <utility>
+#include <concepts>
 
-template <typename K, typename V>
+template <typename T>
+concept Hashable = requires(T a, T b) {
+    { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
+    { a == b } -> std::convertible_to<bool>;
+};
+
+template <Hashable K, typename V>
 struct slot
 {
     K key{};
@@ -25,7 +32,7 @@ TODO: take large keys as a reffernce in insert then make a copy if a insertion i
 
 */
 
-template <typename K, typename V, typename hash = std::hash<K>, typename eq = std::equal_to<K>, const int resize_factor = 2, const float max_load_factor = 0.75f>
+template <Hashable K, typename V, typename hash = std::hash<K>, typename eq = std::equal_to<K>, const int resize_factor = 2, const float max_load_factor = 0.75f>
 class open_map
 {
 public:
