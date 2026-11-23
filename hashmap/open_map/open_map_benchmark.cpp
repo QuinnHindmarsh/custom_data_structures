@@ -1,6 +1,6 @@
 // Benchmark: open_map vs std::unordered_map.
 //
-// open_map is run once per max load factor (0.75, 0.80, 0.85, 0.90, 0.95), so each table shows which one is fastest.
+// open_map is run once per max load factor (0.70, 0.75, 0.80, 0.85, 0.90 ), so each table shows which one is fastest.
 //
 // For each key type (uint32_t, uint64_t, std::string) at N = 1,000,000, every map runs the same phases:
 //   insert      N new keys into an empty map (includes all rehashes)
@@ -52,7 +52,7 @@ using value_t = std::uint64_t;
 template <typename K, float LF>
 using omap = open_map<K, value_t, std::hash<K>, std::equal_to<K>, 2, LF>;
 
-constexpr std::array<float, 5> load_factors{0.75f, 0.80f, 0.85f, 0.90f, 0.95f};
+constexpr std::array<float, 5> load_factors{0.7f, 0.75f, 0.80f, 0.85f, 0.90f};
 constexpr std::size_t NUM_LF = load_factors.size();
 constexpr std::size_t NUM_MAPS = NUM_LF + 1; // every load factor + std::unordered_map (last)
 

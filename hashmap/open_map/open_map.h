@@ -8,6 +8,7 @@
 #include <concepts>
 #include <type_traits>
 
+
 template <typename T>
 concept Hashable = requires(T a, T b) {
     { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
@@ -39,7 +40,6 @@ struct slot<K, V>
 
 /*
 OPTIMISATIONS/imrpovements
-TODO: reduce the size of DIB? It doesnt really need to be 64 bits but technically chains could be that long, in practice it wouldnt relaly ever happen. but would be undefined if it did
 TODO: I could do a struct slots that holds a vector of key,dib pairs (hash/dib pairs for non integrals), and a vector of values. This allows more elements to be loaded in the cache line as DIB and key need to be checked much more then value
 TODO: I never resize do`wnwards
 
@@ -78,7 +78,8 @@ public:
                 return;
             }
 
-            if (m_size + 1 > m_grow_at)
+            // probe_distance == 0 means the key would need a DIB > max_dib at existing_idx
+            if (m_size + 1 > m_grow_at || probe_distance > max_dib)
             {
                 // rehashing makes the existing index and probe distance no longer valid
                 rehash(m_capacity * resize_factor);
@@ -112,7 +113,7 @@ public:
     {
         const uint64_t h = m_hash(key);
         size_t idx{index_from_hash(h)};
-        size_t probe_distance{1};
+        uint8_t probe_distance{1}; // larger then needed, but the extra byte removes a comparasion each itteration
 
         while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
@@ -150,6 +151,7 @@ private:
     size_t m_size{0};
     size_t m_grow_at;
     static constexpr std::size_t npos{static_cast<std::size_t>(-1)}; // max_size_t - used as a sentinal value
+    static constexpr uint8_t max_dib{100};                           // longest allowed probe distance, exceeding it triggers a rehash
     std::vector<slot<K, V>> m_slots{};
     uint8_t m_shift;
 
@@ -193,7 +195,7 @@ private:
     // this is the single point where the key/value are copied or moved into the map.
     // K(...)/V(...) instead of bare braces so e.g. an int value for a double V isn't a narrowing error
     template <typename KArg, typename VArg>
-    static slot_t make_slot(KArg &&key, VArg &&value, [[maybe_unused]] uint64_t h, size_t dib)
+    static slot_t make_slot(KArg &&key, VArg &&value, [[maybe_unused]] uint64_t h, uint8_t dib)
     {
         if constexpr (stores_hash)
             return slot_t{K(std::forward<KArg>(key)), V(std::forward<VArg>(value)), h, dib};
@@ -202,8 +204,11 @@ private:
     }
 
     // robin hood insert starting at idx, cur.DIB must already be the probe distance for idx.
-    // no key comparisons - caller guarantees the key is not present
-    void insert_no_check(slot_t &&cur, size_t idx)
+    // no key comparisons - caller guarantees the key is not present.
+    // returns false if the element being carried would need a DIB > max_dib. The table is still
+    // valid in that case (every slot written so far has a correct DIB), but cur now holds an
+    // element (possibly a displaced one, not the original) that has not been placed yet
+    [[nodiscard]] bool try_insert_no_check(slot_t &cur, size_t idx)
     {
         while (m_slots[idx].DIB > 0)
         {
@@ -211,11 +216,27 @@ private:
             {
                 std::swap(cur, m_slots[idx]);
             }
-            idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
+            if (cur.DIB == max_dib)
+                return false;
 
+            idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
             ++cur.DIB;
         }
         m_slots[idx] = std::move(cur);
+        return true;
+    }
+
+    // as above, but grows the table until the carried element fits.
+    // can recurse through rehash -> insert_no_check -> rehash, which is safe: the inner rehash
+    // only touches m_slots, and the outer rehash's loop reads its own old_slots + the updated members
+    void insert_no_check(slot_t &&cur, size_t idx)
+    {
+        while (!try_insert_no_check(cur, idx))
+        {
+            rehash(m_capacity * resize_factor);
+            cur.DIB = 1;
+            idx = index_from_hash(slot_hash(cur));
+        }
     }
 
     void rehash(size_t new_capacity)
@@ -225,7 +246,7 @@ private:
         m_slots = std::vector<slot<K, V>>(new_capacity);
         m_capacity = new_capacity;
         m_grow_at = static_cast<size_t>(m_capacity * max_load_factor);
-        m_shift = 64 - std::countr_zero(m_capacity);
+        m_shift = static_cast<uint8_t>(64 - std::countr_zero(m_capacity));
 
         for (auto &s : old_slots)
         {
@@ -238,10 +259,12 @@ private:
         }
     }
 
-    std::pair<size_t, size_t> insertion_idx(const K &key, uint64_t h) const
+    // returns {idx, probe distance at idx}. A probe distance of 0 means the key is not present and
+    // inserting it would need a DIB > max_dib (the slot at idx is occupied, so find still works)
+    std::pair<size_t, uint8_t> insertion_idx(const K &key, uint64_t h) const
     {
         size_t idx{index_from_hash(h)};
-        size_t probe_distance{1};
+        uint8_t probe_distance{1};
 
         while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
