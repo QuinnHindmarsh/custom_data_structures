@@ -29,10 +29,6 @@ public:
 
     void insert(K key, V value)
     {
-        if (m_size + 1 > m_capacity * max_load_factor)
-        {
-            rehash(m_capacity * resize_factor);
-        }
 
         V *existing_value = find(key);
         if (existing_value != nullptr)
@@ -41,22 +37,37 @@ public:
             return;
         }
 
-        size_t idx{index(key)};
-        slot<K, V> cur{key, value, 0, true};
-        while (m_slots[idx].occupied)
+        if (m_size + 1 > m_capacity * max_load_factor)
         {
-            if (cur.DIB > m_slots[idx].DIB)
-            {
-                std::swap(cur, m_slots[idx]);
-            }
-
-            idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
-            ++dib;
+            rehash(m_capacity * resize_factor);
         }
-        ++m_size;
+
+        insert_no_check(std::move(key), std::move(value));
     }
 
-    V *find(K key) const
+    const V *find(K key) const
+    { // return nullptr if not found
+        size_t idx{index(key)};
+        size_t probe_distance{0};
+
+        while (m_slots[idx].occupied) // backwards shift deletion, so we can stop searching when we hit an empty slot
+        {
+
+            if (m_eq(m_slots[idx].key, key))
+            {
+                return &m_slots[idx].value;
+            }
+            if (m_slots[idx].DIB < probe_distance) // if the DIB is 0, then we have reached the end of the cluster and the key is not in the map
+            {
+                return nullptr;
+            }
+            ++probe_distance;
+            idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
+        }
+        return nullptr;
+    }
+
+    V *find(K key)
     { // return nullptr if not found
         size_t idx{index(key)};
         size_t probe_distance{0};
@@ -81,26 +92,21 @@ public:
     void erase(K key)
     {
         size_t idx{index(key)};
-        size_t last_idx{};
         size_t probe_distance{0};
-        while (m_slots[idx].occupied) // backwards shift deletion, so we can stop searching when we hit an empty slot
+        while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
-            if (m_eq(m_slots[idx].key, key))
-            {
-                m_slots[idx].occupied = false;
-                --m_size;
-                last_idx = idx;
-                idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
-
-                break;
-            }
-            if (m_slots[idx].DIB < probe_distance) // if the DIB is 0, then we have reached the end of the cluster and the key is not in the map
-            {
+            if (!m_slots[idx].occupied)
                 return;
-            }
+            if (m_eq(m_slots[idx].key, key))
+                break;
+            if (m_slots[idx].DIB < probe_distance)
+                return;
+
             ++probe_distance;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
         }
+        size_t last_idx{idx};
+        idx = (idx + 1) & (m_capacity - 1);
 
         while (m_slots[idx].occupied && m_slots[idx].DIB > 0) // backwards shift deletion
         {
@@ -127,24 +133,27 @@ private:
 
     std::size_t index(const K &key) const
     {
-        std::uint64_t hash_value = hash{}(key);
+        std::uint64_t hash_value = m_hash(key);
         // Fibonachi hashing
         return static_cast<std::size_t>((hash_value * 0x9E3779B97F4A7C15ull) >> (64 - m_log_2_cap)); // returns top m_log_2_cap bits of the hash value, which is equivalent to hash_value % m_capacity when m_capacity is a power of 2
     }
     // allows us to avoid comparasions when rehashing
     void insert_no_check(K &&key, V &&value)
     {
-        std::size_t idx{index(key)};
-        std::size_t dib{0};
+        size_t idx{index(key)};
+        slot<K, V> cur{std::move(key), std::move(value), 0, true};
+
         while (m_slots[idx].occupied)
         {
+            if (cur.DIB > m_slots[idx].DIB)
+            {
+                std::swap(cur, m_slots[idx]);
+            }
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
-            ++dib;
+
+            ++cur.DIB;
         }
-        m_slots[idx].key = std::move(key);
-        m_slots[idx].value = std::move(value);
-        m_slots[idx].occupied = true;
-        m_slots[idx].DIB = dib;
+        ++m_size;
     }
 
     void rehash(size_t new_capacity)
