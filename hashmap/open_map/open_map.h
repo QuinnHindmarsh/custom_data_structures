@@ -2,9 +2,11 @@
 #include <vector>
 #include <cstdint>
 #include <cassert>
-#include <cmath>
 #include <functional>
+#include <bit>
+#include <utility>
 
+// TODO: using dib 0 as empty allows me to reduce size of slot -> when am i ever going to have more then 2^32 chunks
 template <typename K, typename V>
 struct slot
 {
@@ -24,9 +26,9 @@ public:
         assert(capacity >= 2 && (capacity & (capacity - 1)) == 0 && "capacity must be a power of 2");
 
         m_slots = std::vector<slot<K, V>>(m_capacity);
-        m_log_2_cap = static_cast<int>(std::log2(m_capacity));
+        m_log_2_cap = std::countr_zero(m_capacity);
     }
-
+    // TODO: probes table twice, optimise
     void insert(K key, V value)
     {
 
@@ -36,23 +38,29 @@ public:
             *existing_value = value; // update existing key
             return;
         }
-
+        // TODO: make m_resive_at to avoid float conversions every time
         if (m_size + 1 > m_capacity * max_load_factor)
         {
             rehash(m_capacity * resize_factor);
         }
 
         insert_no_check(std::move(key), std::move(value));
+        ++m_size;
     }
 
-    const V *find(K key) const
+    V *find(const K &key)
     { // return nullptr if not found
+        return const_cast<V *>(std::as_const(*this).find(key));
+    }
+
+    const V *find(const K &key) const
+    {
+
         size_t idx{index(key)};
         size_t probe_distance{0};
 
         while (m_slots[idx].occupied) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
-
             if (m_eq(m_slots[idx].key, key))
             {
                 return &m_slots[idx].value;
@@ -67,29 +75,7 @@ public:
         return nullptr;
     }
 
-    V *find(K key)
-    { // return nullptr if not found
-        size_t idx{index(key)};
-        size_t probe_distance{0};
-
-        while (m_slots[idx].occupied) // backwards shift deletion, so we can stop searching when we hit an empty slot
-        {
-
-            if (m_eq(m_slots[idx].key, key))
-            {
-                return &m_slots[idx].value;
-            }
-            if (m_slots[idx].DIB < probe_distance) // if the DIB is 0, then we have reached the end of the cluster and the key is not in the map
-            {
-                return nullptr;
-            }
-            ++probe_distance;
-            idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
-        }
-        return nullptr;
-    }
-
-    void erase(K key)
+    void erase(const K &key)
     {
         size_t idx{index(key)};
         size_t probe_distance{0};
@@ -98,7 +84,11 @@ public:
             if (!m_slots[idx].occupied)
                 return;
             if (m_eq(m_slots[idx].key, key))
+            {
+                m_slots[idx].occupied = false;
+                --m_size;
                 break;
+            }
             if (m_slots[idx].DIB < probe_distance)
                 return;
 
@@ -111,13 +101,15 @@ public:
         while (m_slots[idx].occupied && m_slots[idx].DIB > 0) // backwards shift deletion
         {
 
-            m_slots[last_idx] = m_slots[idx];
+            m_slots[last_idx] = std::move(m_slots[idx]);
             m_slots[last_idx].DIB--;
             last_idx = idx;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
         }
         m_slots[last_idx].occupied = false;
     }
+
+    // TODO: I dont resize to a lower size ever
 
 private:
     static_assert(resize_factor > 1 && (resize_factor & (resize_factor - 1)) == 0 && "resize factor must be > 1, and a power of 2 as hash & (cap -1) is used over %");
@@ -153,7 +145,7 @@ private:
 
             ++cur.DIB;
         }
-        ++m_size;
+        m_slots[idx] = std::move(cur);
     }
 
     void rehash(size_t new_capacity)
@@ -162,7 +154,7 @@ private:
         std::vector<slot<K, V>> old_slots = std::move(m_slots);
         m_slots = std::vector<slot<K, V>>(new_capacity);
         m_capacity = new_capacity;
-        m_log_2_cap = static_cast<int>(std::log2(m_capacity));
+        m_log_2_cap = std::countr_zero(m_capacity);
 
         for (auto &s : old_slots)
         {
