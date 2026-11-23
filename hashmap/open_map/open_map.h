@@ -12,6 +12,7 @@ struct slot
     K key{};
     V value{};
     size_t DIB{0}; // distance to initial bucket - 0 means bucket is empty
+    // TODO: reduce DIB size
 };
 // TODO: struct of vectors?
 
@@ -26,23 +27,28 @@ public:
 
         m_slots{std::vector<slot<K, V>>(m_capacity)};
         m_log_2_cap{std::countr_zero(m_capacity)};
-        m_grow_at static_cast<int> { m_capacity *max_load_factor }
+        m_grow_at = static_cast<size_t>(m_capacity * max_load_factor)
     }
     // TODO: probes table twice, optimise
     void insert(K key, V value)
     {
-        V *existing_value_idx = find_idx(key);
-        if (existing_value_idx != npos)
+        auto [existing_idx, probe_distance] = insertion_idx(key);
+        if (m_slots[existing_idx].DIB != 0 && m_eq(m_slots[existing_idx].key, key))
         {
-            m_slots[idx] = std::move(value);
+            m_slots[existing_idx].value = std::move(value);
             return;
         }
+
         if (m_size + 1 > m_grow_at)
         {
+            // rehashing makes the existing index and probe distance no longer valid
             rehash(m_capacity * resize_factor);
+            insert_no_check(std::move(key), std::move(value));
+            ++m_size;
+            return;
         }
 
-        insert_no_check(std::move(key), std::move(value));
+        insert_no_check(std::move(key), std::move(value), existing_index, probe_distance);
         ++m_size;
     }
 
@@ -65,7 +71,7 @@ public:
             }
             if (m_slots[idx].DIB < probe_distance) // if the DIB is 1, then we have reached the end of the cluster and the key is not in the map
             {
-            return nullptr;
+                return nullptr;
             }
             ++probe_distance;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
@@ -117,8 +123,7 @@ private:
     size_t m_size{0};
     int m_log_2_cap{};
     size_t m_grow_at{};
-    
-
+    static constexpr std::size_t npos{static_cast<std::size_t>(-1)}; // max_size_t - used as a sentinal value
     std::vector<slot<K, V>> m_slots{};
 
     eq m_eq{};
@@ -130,11 +135,15 @@ private:
         // Fibonachi hashing
         return static_cast<size_t>((hash_value * 0x9E3779B97F4A7C15ull) >> (64 - m_log_2_cap)); // returns top m_log_2_cap bits of the hash value, which is equivalent to hash_value % m_capacity when m_capacity is a power of 2
     }
+
     // allows us to avoid comparasions when rehashing
-    void insert_no_check(K &&key, V &&value)
+    void insert_no_check(K &&key, V &&value, size_t idx = npos, size_t probe_length = 1)
     {
-        size_t idx{index(key)};
-        slot<K, V> cur{std::move(key), std::move(value), 1, true};
+        if (start_idx == npos)
+        {
+            size_t idx{index(key)};
+        }
+        slot<K, V> cur{std::move(key), std::move(value), probe_length, true};
 
         while (m_slots[idx].occupied)
         {
@@ -155,7 +164,7 @@ private:
         std::vector<slot<K, V>> old_slots = std::move(m_slots);
         m_slots = std::vector<slot<K, V>>(new_capacity);
         m_capacity = new_capacity;
-        m_grow_at = static_cast<int>(m_capacity * max_load_factor);
+        m_grow_at = static_cast<size_t>(m_capacity * max_load_factor);
         m_log_2_cap = std::countr_zero(m_capacity);
 
         for (auto &s : old_slots)
@@ -167,7 +176,7 @@ private:
         }
     }
 
-    size_t insertion_idx(const K &key) const // finds the index where the key would be if its in the table - logic is near identicial to find_idx, however for ths to be reused find_idx would need to do a nextra comparasion then neccisary.
+    std::pair<size_t, size_t> insertion_idx(const K &key) const
     {
         size_t idx{index(key)};
         size_t probe_distance{1};
@@ -176,17 +185,17 @@ private:
         {
             if (m_slots[idx].DIB < probe_distance) // if the DIB is 1, then we have reached the end of the cluster and the key is not in the map
             {
-                return idx;
+                return {idx, probe_distance};
             }
             if (m_eq(m_slots[idx].key, key))
             {
-                return idx;
+                return {idx, probe_distance};
             }
 
             ++probe_distance;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
         }
-        return idx;
+        return {idx, probe_distance};
     }
-
 };
+
