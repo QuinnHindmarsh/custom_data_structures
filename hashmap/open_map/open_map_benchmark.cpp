@@ -176,7 +176,15 @@ Workload<K> make_workload(std::uint64_t seed)
     std::shuffle(w.present_shuffled.begin(), w.present_shuffled.end(), rng);
 
     // exact 25/25/25/25 split, finds and erases each split 50/50 hit/miss, in random order
-    enum Gen : std::uint8_t { G_INSERT, G_UPDATE, G_FIND_HIT, G_FIND_MISS, G_ERASE_HIT, G_ERASE_MISS };
+    enum Gen : std::uint8_t
+    {
+        G_INSERT,
+        G_UPDATE,
+        G_FIND_HIT,
+        G_FIND_MISS,
+        G_ERASE_HIT,
+        G_ERASE_MISS
+    };
     std::vector<Gen> kinds;
     kinds.reserve(N);
     kinds.insert(kinds.end(), quarter, G_INSERT);
