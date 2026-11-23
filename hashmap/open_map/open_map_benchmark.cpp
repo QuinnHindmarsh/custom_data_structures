@@ -385,7 +385,7 @@ std::string build_markdown(const std::vector<Result> &results)
 
 int main(int argc, char **argv)
 {
-    const std::string out_path = argc > 1 ? argv[1] : "open_map_benchmark_results.md";
+    const std::string out_path = argc > 1 ? argv[1] : "custom_data_structures\\hashmap\\open_map\\open_map_benchmark_results.md";
     std::vector<Result> results;
 
     constexpr std::size_t n = 1'000'000;
