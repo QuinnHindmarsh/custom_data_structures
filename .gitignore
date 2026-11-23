@@ -1,3 +1,3 @@
-hashmap/open_map_check.cpp
-.vscode/tasks.json
+.vscode
 hashmap/open_map/open_map_check.cpp
+*.exe
