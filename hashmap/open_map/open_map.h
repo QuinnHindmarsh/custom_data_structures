@@ -26,19 +26,18 @@ public:
 
         m_slots{std::vector<slot<K, V>>(m_capacity)};
         m_log_2_cap{std::countr_zero(m_capacity)};
-        m_resize_at static_cast<int> { m_capacity *max_load_factor }
+        m_grow_at static_cast<int> { m_capacity *max_load_factor }
     }
     // TODO: probes table twice, optimise
     void insert(K key, V value)
     {
-
-        V *existing_value = find(key);
-        if (existing_value != nullptr)
+        V *existing_value_idx = find_idx(key);
+        if (existing_value_idx != npos)
         {
-            *existing_value = value; // update existing key
+            m_slots[idx] = std::move(value);
             return;
         }
-        if (m_size + 1 > m_resize_at)
+        if (m_size + 1 > m_grow_at)
         {
             rehash(m_capacity * resize_factor);
         }
@@ -66,7 +65,7 @@ public:
             }
             if (m_slots[idx].DIB < probe_distance) // if the DIB is 1, then we have reached the end of the cluster and the key is not in the map
             {
-                return nullptr;
+            return nullptr;
             }
             ++probe_distance;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
@@ -81,8 +80,7 @@ public:
 
         while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
         {
-            
-          if (m_slots[idx].DIB == 0)
+            if (m_slots[idx].DIB == 0)
                 return;
             if (m_eq(m_slots[idx].key, key))
             {
@@ -118,18 +116,19 @@ private:
     size_t m_capacity{};
     size_t m_size{0};
     int m_log_2_cap{};
-    size_t m_resize_at{};
+    size_t m_grow_at{};
+    
 
     std::vector<slot<K, V>> m_slots{};
 
     eq m_eq{};
     hash m_hash{};
 
-    std::size_t index(const K &key) const
+    size_t index(const K &key) const
     {
         std::uint64_t hash_value = m_hash(key);
         // Fibonachi hashing
-        return static_cast<std::size_t>((hash_value * 0x9E3779B97F4A7C15ull) >> (64 - m_log_2_cap)); // returns top m_log_2_cap bits of the hash value, which is equivalent to hash_value % m_capacity when m_capacity is a power of 2
+        return static_cast<size_t>((hash_value * 0x9E3779B97F4A7C15ull) >> (64 - m_log_2_cap)); // returns top m_log_2_cap bits of the hash value, which is equivalent to hash_value % m_capacity when m_capacity is a power of 2
     }
     // allows us to avoid comparasions when rehashing
     void insert_no_check(K &&key, V &&value)
@@ -156,7 +155,7 @@ private:
         std::vector<slot<K, V>> old_slots = std::move(m_slots);
         m_slots = std::vector<slot<K, V>>(new_capacity);
         m_capacity = new_capacity;
-        m_resize_at = static_cast<int>(m_capacity * max_load_factor);
+        m_grow_at = static_cast<int>(m_capacity * max_load_factor);
         m_log_2_cap = std::countr_zero(m_capacity);
 
         for (auto &s : old_slots)
@@ -167,4 +166,27 @@ private:
             }
         }
     }
+
+    size_t insertion_idx(const K &key) const // finds the index where the key would be if its in the table - logic is near identicial to find_idx, however for ths to be reused find_idx would need to do a nextra comparasion then neccisary.
+    {
+        size_t idx{index(key)};
+        size_t probe_distance{1};
+
+        while (true) // backwards shift deletion, so we can stop searching when we hit an empty slot
+        {
+            if (m_slots[idx].DIB < probe_distance) // if the DIB is 1, then we have reached the end of the cluster and the key is not in the map
+            {
+                return idx;
+            }
+            if (m_eq(m_slots[idx].key, key))
+            {
+                return idx;
+            }
+
+            ++probe_distance;
+            idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
+        }
+        return idx;
+    }
+
 };
