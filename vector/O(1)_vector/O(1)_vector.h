@@ -50,7 +50,7 @@ public:
 
     void pop_no_return()
     {
-        if (!not_empty())
+        if (!not_empty()) [[unlikely]]
         {
             report_out_of_bounds_indexing(0);
         }
@@ -62,7 +62,7 @@ public:
 
     T pop() //  code duplication for the sake of not needing to repeat bounds check
     {
-        if (!not_empty())
+        if (!not_empty()) [[unlikely]]
         {
             report_out_of_bounds_indexing(0);
         }
@@ -78,7 +78,7 @@ public:
     {
         // forces you to set an an element < size, i.e. can only be used to modify an existing element. Prevents operations with the m_next array from needing to be handled
 
-        if (idx >= m_size)
+        if (idx >= m_size) [[unlikely]]
         {
             report_out_of_bounds_indexing(idx);
         }
@@ -103,7 +103,7 @@ public:
 
     const T *at_ptr(size_t idx) const // no garuntees this will be valid after any pop/push operation
     {
-        if (idx >= m_size)
+        if (idx >= m_size) [[unlikely]]
         {
             // 0-based indexing
             report_out_of_bounds_indexing(idx);
@@ -142,11 +142,9 @@ private:
     // paramater values
     int m_resize_factor{2};
 
-    uint8_t m_grow_at_denom{2};   // when size is at c/m_grow_at start creating a bigger vector
-    uint8_t m_shrink_at_denom{8}; // when size is c/m_shrink_at, start creating a smaller vector
-    uint8_t m_move_for_grow{2};   // number of elements to move when vector is in growing position
-    uint8_t m_move_for_shrink{3}; // number of elements to move when vector is in in shrinking position
-    uint8_t m_moves_per_op{};
+    static constexpr uint8_t m_grow_at_denom{2};   // when size is at c/m_grow_at start creating a bigger vector
+    static constexpr uint8_t m_shrink_at_denom{8}; // when size is c/m_shrink_at, start creating a smaller vector
+    static constexpr uint8_t m_moves_per_op{4};
     static constexpr size_t k_async_free_bytes{256 * 1024};
 
     size_t m_size{0};
@@ -164,13 +162,12 @@ private:
         m_grow_threashold = (m_capacity + 1) / m_grow_at_denom;
     }
 
-    void start_resize(size_t new_capacity, int moves)
+    void start_resize(size_t new_capacity)
     {
         new_capacity = std::max(new_capacity, static_cast<size_t>(1)); // enforces min size of 1
         m_next_capacity = new_capacity;
         m_next = new T[m_next_capacity];
         m_left = 0;
-        m_moves_per_op = moves;
     }
 
     void finish_resize()
@@ -198,15 +195,9 @@ private:
         {
             return;
         }
-
-        for (int i{0}; i < m_moves_per_op; ++i)
-        {
-            if (m_left == m_size)
-                break;
-
-            m_next[m_left] = m_cur[m_left];
-            ++m_left;
-        }
+        size_t n{std::min<size_t>(m_moves_per_op, m_size - m_left)};
+        std::copy_n(m_cur + m_left, n, m_next + m_left);
+        m_left += n;
 
         if (m_left == m_size)
         {
@@ -218,7 +209,7 @@ private:
     {
         if (m_next == nullptr && (m_size <= m_shrink_threashold))
         {
-            start_resize(m_capacity / m_resize_factor, m_move_for_shrink);
+            start_resize(m_capacity / m_resize_factor);
         }
     }
 
@@ -226,7 +217,7 @@ private:
     {
         if (m_next == nullptr && (m_size >= m_grow_threashold))
         {
-            start_resize(m_capacity * m_resize_factor, m_move_for_grow);
+            start_resize(m_capacity * m_resize_factor);
         }
     }
 };

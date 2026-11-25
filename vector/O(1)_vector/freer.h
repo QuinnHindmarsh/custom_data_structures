@@ -64,8 +64,8 @@ private:
             for (T *p : batch)
             {
                 delete[] p;
-                batch.clear();
             }
+            batch.clear();
         }
     }
 

@@ -1,16 +1,25 @@
 // Runtime benchmark: O1vector<int> vs std::vector<int>
 //
-// For each operation (push, at, set, pop) and each vector, this measures:
-//   - mean time per op   (whole loop timed at once / N -> no timer overhead)
-//   - variance + stddev  (every single op timed on its own)
-//   - p99.9 and worst    (from the same per-op timings)
+// Each operation (push, at, set, pop) is measured over RUNS separate runs,
+// each run doing N ops on a fresh vector. std::vector and O1vector take
+// turns going first, and every run uses new random indices.
 //
-// Per-op timing uses the CPU cycle counter (rdtsc), converted to ns.
-// The cost of reading the timer itself is measured and subtracted.
+// Per run, for each operation:
+//   - mean          whole loop timed at once / N (no timer cost)
+//   - variance      every op timed on its own (rdtsc), ns^2
+//   - p99.9         99.9% of ops were at least this fast
+//   - worst-10 avg  mean of the 10 slowest ops in that run
+//   - max           the single slowest op in that run
 //
-// Build & run (-O2 matters: unoptimised timings are meaningless):
-//   g++ -std=c++20 -O2 O1_vec_benchmark.cpp -o O1_vec_benchmark.exe
+// The table shows each of those averaged over all runs (max = overall max).
+// "+-" on the mean is a 95% confidence range: the true mean is very likely
+// inside it. If two vectors' ranges overlap, the difference may be noise.
+//
+// Build & run (-O2 matters: unoptimised timings are meaningless;
+// -DNDEBUG turns asserts off, since std::vector has none):
+//   g++ -std=c++20 -O2 -DNDEBUG -static O1_vec_benchmark.cpp -o O1_vec_benchmark.exe
 //   ./O1_vec_benchmark.exe
+// Or in VS Code: Terminal > Run Task > "run O1_vec_benchmark (release)"
 
 #include <algorithm>
 #include <chrono>
@@ -33,8 +42,10 @@
 // Settings
 // =====================================================================
 
-constexpr size_t N{1 << 21}; // ops per trial (~2 million)
-constexpr int TRIALS{5};     // each benchmark is repeated this many times
+constexpr size_t N{1 << 21};   // ops per run (~2 million)
+constexpr int RUNS{50};        // separate runs per vector
+constexpr int WARMUP_RUNS{2};  // thrown away: page faults, CPU clock ramp-up
+constexpr size_t WORST_K{10};  // "worst-10 avg" = mean of this many slowest ops
 
 // =====================================================================
 // Timing helpers
@@ -84,20 +95,7 @@ uint64_t measure_timer_overhead()
 double g_ns_per_tick{};
 uint64_t g_overhead{};
 
-// Collects per-op samples (in ticks) plus bulk timings across trials.
-struct Result
-{
-    std::vector<uint64_t> samples;
-    double bulk_ns_total{0};
-    size_t bulk_ops{0};
-
-    void add_sample(uint64_t raw_ticks)
-    {
-        samples.push_back(raw_ticks > g_overhead ? raw_ticks - g_overhead : 0);
-    }
-};
-
-// Times `body(i)` for i in [0, N) as one block. Returns ns.
+// Times `body(i)` for i in [0, N) as one block. Returns ns per op.
 template <typename Body>
 double time_bulk(Body body)
 {
@@ -108,20 +106,79 @@ double time_bulk(Body body)
         body(i);
     }
     auto end{clock::now()};
-    return std::chrono::duration<double, std::nano>(end - start).count();
+    return std::chrono::duration<double, std::nano>(end - start).count() / N;
 }
 
-// Times every `body(i)` separately and stores each sample.
+// Times every `body(i)` separately into `samples` (ticks, overhead removed).
 template <typename Body>
-void time_each(Result &r, Body body)
+void time_each(std::vector<uint64_t> &samples, Body body)
 {
     for (size_t i{0}; i < N; ++i)
     {
         uint64_t t0{ticks()};
         body(i);
         uint64_t t1{ticks()};
-        r.add_sample(t1 - t0);
+        uint64_t raw{t1 - t0};
+        samples[i] = raw > g_overhead ? raw - g_overhead : 0;
     }
+}
+
+// =====================================================================
+// Stats for one run of one operation
+// =====================================================================
+
+struct RunStats
+{
+    double mean_ns;   // bulk pass
+    double variance;  // ns^2
+    double p999_ns;
+    double worst10_ns;
+    double max_ns;
+};
+
+// Reorders `s` (that's fine, it's refilled every run).
+RunStats compute_run(double bulk_mean_ns, std::vector<uint64_t> &s)
+{
+    const double n{static_cast<double>(s.size())};
+
+    double sum{0};
+    for (uint64_t x : s)
+    {
+        sum += static_cast<double>(x);
+    }
+    double mean_ticks{sum / n};
+
+    double sq{0};
+    for (uint64_t x : s)
+    {
+        double d{static_cast<double>(x) - mean_ticks};
+        sq += d * d;
+    }
+    double variance{(sq / n) * g_ns_per_tick * g_ns_per_tick};
+
+    // Move the WORST_K largest samples to the end.
+    auto worst_begin{s.end() - WORST_K};
+    std::nth_element(s.begin(), worst_begin, s.end());
+    double worst_sum{0};
+    uint64_t worst_max{0};
+    for (auto it{worst_begin}; it != s.end(); ++it)
+    {
+        worst_sum += static_cast<double>(*it);
+        worst_max = std::max(worst_max, *it);
+    }
+
+    // Everything before worst_begin is <= the worst K, so the 99.9th
+    // percentile can be found in that front part.
+    auto p999{s.begin() + static_cast<std::ptrdiff_t>((n - 1) * 0.999)};
+    std::nth_element(s.begin(), p999, worst_begin);
+
+    return {
+        bulk_mean_ns,
+        variance,
+        static_cast<double>(*p999) * g_ns_per_tick,
+        worst_sum / WORST_K * g_ns_per_tick,
+        static_cast<double>(worst_max) * g_ns_per_tick,
+    };
 }
 
 // =====================================================================
@@ -138,8 +195,8 @@ struct StdVec
         v.pop_back();
         return x;
     }
-    int at(size_t i) const { return v.at(i); }       // bounds-checked, like O1vector
-    void set(size_t i, int x) { v.at(i) = x; }        // bounds-checked, like O1vector
+    int at(size_t i) const { return v.at(i); }  // bounds-checked, like O1vector
+    void set(size_t i, int x) { v.at(i) = x; }   // bounds-checked, like O1vector
 };
 
 struct MyVec
@@ -152,112 +209,107 @@ struct MyVec
 };
 
 // =====================================================================
-// Benchmarks
+// One run of all four operations
 // =====================================================================
 
-struct AllResults
+struct AllRuns
 {
-    Result push, at, set, pop;
+    std::vector<RunStats> push, at, set, pop;
 };
 
-std::vector<size_t> make_random_indices()
+template <typename Vec>
+void one_run(const std::vector<size_t> &idx, std::vector<uint64_t> &samples, AllRuns *out)
 {
-    std::mt19937 rng{123};
+    // ---- bulk pass: mean, no timer inside the loop ----
+    double push_mean, at_mean, set_mean, pop_mean;
+    {
+        Vec vec;
+        push_mean = time_bulk([&](size_t i)
+                              { vec.push(static_cast<int>(i)); });
+        at_mean = time_bulk([&](size_t i)
+                            { g_sink = vec.at(idx[i]); });
+        set_mean = time_bulk([&](size_t i)
+                             { vec.set(idx[i], static_cast<int>(i)); });
+        pop_mean = time_bulk([&](size_t)
+                             { g_sink = vec.pop(); });
+    }
+
+    // ---- per-op pass: every op timed alone ----
+    Vec vec;
+    time_each(samples, [&](size_t i)
+              { vec.push(static_cast<int>(i)); });
+    RunStats push{compute_run(push_mean, samples)};
+
+    time_each(samples, [&](size_t i)
+              { g_sink = vec.at(idx[i]); });
+    RunStats at{compute_run(at_mean, samples)};
+
+    time_each(samples, [&](size_t i)
+              { vec.set(idx[i], static_cast<int>(i)); });
+    RunStats set{compute_run(set_mean, samples)};
+
+    time_each(samples, [&](size_t)
+              { g_sink = vec.pop(); });
+    RunStats pop{compute_run(pop_mean, samples)};
+
+    if (out != nullptr) // nullptr = warm-up run, results thrown away
+    {
+        out->push.push_back(push);
+        out->at.push_back(at);
+        out->set.push_back(set);
+        out->pop.push_back(pop);
+    }
+}
+
+void fill_random_indices(std::vector<size_t> &idx, unsigned seed)
+{
+    std::mt19937 rng{seed};
     std::uniform_int_distribution<size_t> dist{0, N - 1};
-    std::vector<size_t> idx(N);
     for (auto &i : idx)
     {
         i = dist(rng);
     }
-    return idx;
-}
-
-template <typename Vec>
-AllResults run_benchmarks(const std::vector<size_t> &idx)
-{
-    AllResults r;
-    for (Result *res : {&r.push, &r.at, &r.set, &r.pop})
-    {
-        res->samples.reserve(N * TRIALS);
-    }
-
-    for (int trial{0}; trial < TRIALS; ++trial)
-    {
-        // ---- bulk pass: mean time with no timer in the loop ----
-        {
-            Vec vec;
-            r.push.bulk_ns_total += time_bulk([&](size_t i)
-                                              { vec.push(static_cast<int>(i)); });
-            r.at.bulk_ns_total += time_bulk([&](size_t i)
-                                            { g_sink = vec.at(idx[i]); });
-            r.set.bulk_ns_total += time_bulk([&](size_t i)
-                                             { vec.set(idx[i], static_cast<int>(i)); });
-            r.pop.bulk_ns_total += time_bulk([&](size_t)
-                                             { g_sink = vec.pop(); });
-            r.push.bulk_ops += N;
-            r.at.bulk_ops += N;
-            r.set.bulk_ops += N;
-            r.pop.bulk_ops += N;
-        }
-
-        // ---- per-op pass: every op timed alone ----
-        {
-            Vec vec;
-            time_each(r.push, [&](size_t i)
-                      { vec.push(static_cast<int>(i)); });
-            time_each(r.at, [&](size_t i)
-                      { g_sink = vec.at(idx[i]); });
-            time_each(r.set, [&](size_t i)
-                      { vec.set(idx[i], static_cast<int>(i)); });
-            time_each(r.pop, [&](size_t)
-                      { g_sink = vec.pop(); });
-        }
-    }
-    return r;
 }
 
 // =====================================================================
-// Stats + printing
+// Summary across runs + printing
 // =====================================================================
 
-struct Stats
+struct Summary
 {
-    double mean_ns;     // from bulk pass
-    double variance;    // ns^2, from per-op pass
-    double stddev;      // ns
-    double p999_ns;     // 99.9th percentile
-    double worst_ns;    // single slowest op
+    double mean_ns;
+    double mean_ci95; // +- range on mean_ns
+    double variance;
+    double stddev;    // sqrt(variance)
+    double p999_ns;
+    double worst10_ns;
+    double max_ns;    // max over all runs
 };
 
-Stats compute(Result &r)
+Summary summarise(const std::vector<RunStats> &runs)
 {
-    std::vector<uint64_t> &s{r.samples};
-
-    double sum{0};
-    for (uint64_t x : s)
+    const double r{static_cast<double>(runs.size())};
+    Summary s{};
+    for (const RunStats &x : runs)
     {
-        sum += static_cast<double>(x) * g_ns_per_tick;
+        s.mean_ns += x.mean_ns / r;
+        s.variance += x.variance / r;
+        s.p999_ns += x.p999_ns / r;
+        s.worst10_ns += x.worst10_ns / r;
+        s.max_ns = std::max(s.max_ns, x.max_ns);
     }
-    double mean_per_op{sum / static_cast<double>(s.size())};
+    s.stddev = std::sqrt(s.variance);
 
+    // 95% confidence range of the mean, from how much it moved run to run.
     double sq{0};
-    for (uint64_t x : s)
+    for (const RunStats &x : runs)
     {
-        double d{static_cast<double>(x) * g_ns_per_tick - mean_per_op};
+        double d{x.mean_ns - s.mean_ns};
         sq += d * d;
     }
-    double variance{sq / static_cast<double>(s.size())};
-
-    std::sort(s.begin(), s.end());
-    size_t p999_index{static_cast<size_t>(static_cast<double>(s.size() - 1) * 0.999)};
-
-    return {
-        r.bulk_ns_total / static_cast<double>(r.bulk_ops),
-        variance,
-        std::sqrt(variance),
-        static_cast<double>(s[p999_index]) * g_ns_per_tick,
-        static_cast<double>(s.back()) * g_ns_per_tick,
-    };
+    double run_sd{std::sqrt(sq / (r - 1))};
+    s.mean_ci95 = 1.96 * run_sd / std::sqrt(r);
+    return s;
 }
 
 std::string fmt_ns(double ns)
@@ -269,29 +321,42 @@ std::string fmt_ns(double ns)
     return std::format("{:.2f} ns", ns);
 }
 
-void print_row(const std::string &name, const Stats &s)
+constexpr const char *ROW{"  {:<12} {:>16} {:>14} {:>11} {:>11} {:>13} {:>11}\n"};
+
+void print_row(const std::string &name, const Summary &s)
 {
-    std::cout << std::format("  {:<12} {:>11} {:>14.1f} {:>11} {:>11} {:>11}\n",
-                             name, fmt_ns(s.mean_ns), s.variance, fmt_ns(s.stddev),
-                             fmt_ns(s.p999_ns), fmt_ns(s.worst_ns));
+    std::cout << std::format(ROW, name,
+                             std::format("{:.3f} +-{:.3f}", s.mean_ns, s.mean_ci95),
+                             std::format("{:.1f}", s.variance),
+                             fmt_ns(s.stddev), fmt_ns(s.p999_ns),
+                             fmt_ns(s.worst10_ns), fmt_ns(s.max_ns));
 }
 
-void print_op(const std::string &op, Result &stdr, Result &myr)
+std::string compare(const char *what, double std_v, double my_v)
 {
-    Stats a{compute(stdr)};
-    Stats b{compute(myr)};
+    double ratio{my_v / std_v};
+    if (ratio >= 1)
+        return std::format("{} {:.2f}x worse", what, ratio);
+    return std::format("{} {:.2f}x better", what, 1 / ratio);
+}
+
+void print_op(const std::string &op, const std::vector<RunStats> &stdr,
+              const std::vector<RunStats> &myr)
+{
+    Summary a{summarise(stdr)};
+    Summary b{summarise(myr)};
 
     std::cout << '\n'
               << op << '\n';
-    std::cout << std::format("  {:<12} {:>11} {:>14} {:>11} {:>11} {:>11}\n",
-                             "", "mean", "variance ns^2", "stddev", "p99.9", "worst");
+    std::cout << std::format(ROW, "", "mean ns", "variance ns^2", "stddev",
+                             "p99.9", "worst-10 avg", "max");
     print_row("std::vector", a);
     print_row("O1vector", b);
 
-    double ratio{a.worst_ns / std::max(b.worst_ns, 1e-9)};
-    std::cout << std::format("  worst: O1vector is {:.1f}x {} than std::vector\n",
-                             ratio >= 1 ? ratio : 1 / ratio,
-                             ratio >= 1 ? "better" : "worse");
+    bool means_overlap{std::abs(a.mean_ns - b.mean_ns) <= a.mean_ci95 + b.mean_ci95};
+    std::cout << "  O1vector: " << compare("mean", a.mean_ns, b.mean_ns)
+              << (means_overlap ? " (ranges overlap: may be noise)" : "")
+              << ", " << compare("worst-10 avg", a.worst10_ns, b.worst10_ns) << '\n';
 }
 
 // =====================================================================
@@ -310,18 +375,40 @@ int main()
     g_ns_per_tick = measure_ns_per_tick();
     g_overhead = measure_timer_overhead();
 
-    std::cout << std::format("N = {} ops per trial, {} trials, T = int ({} bytes)\n",
-                             N, TRIALS, sizeof(int));
+    std::cout << std::format("{} runs x {} ops per operation per vector, T = int ({} bytes)\n",
+                             RUNS, N, sizeof(int));
     std::cout << std::format("timer overhead subtracted: {} ticks ({:.1f} ns)\n",
                              g_overhead, static_cast<double>(g_overhead) * g_ns_per_tick);
 
-    std::vector<size_t> idx{make_random_indices()};
+    std::vector<size_t> idx(N);
+    std::vector<uint64_t> samples(N); // reused by every run
 
-    // Warm-up run so page faults / CPU clock ramp-up don't hit the first one.
-    run_benchmarks<StdVec>(idx);
+    fill_random_indices(idx, 0);
+    for (int w{0}; w < WARMUP_RUNS; ++w)
+    {
+        one_run<StdVec>(idx, samples, nullptr);
+        one_run<MyVec>(idx, samples, nullptr);
+    }
 
-    AllResults stdr{run_benchmarks<StdVec>(idx)};
-    AllResults myr{run_benchmarks<MyVec>(idx)};
+    AllRuns stdr, myr;
+    for (int run{0}; run < RUNS; ++run)
+    {
+        std::cout << std::format("\rrun {}/{}", run + 1, RUNS) << std::flush;
+        fill_random_indices(idx, static_cast<unsigned>(run + 1));
+
+        // Take turns going first, so slow drift (heat, turbo) hits both equally.
+        if (run % 2 == 0)
+        {
+            one_run<StdVec>(idx, samples, &stdr);
+            one_run<MyVec>(idx, samples, &myr);
+        }
+        else
+        {
+            one_run<MyVec>(idx, samples, &myr);
+            one_run<StdVec>(idx, samples, &stdr);
+        }
+    }
+    std::cout << "\r          \r";
 
     print_op("push (empty -> N)", stdr.push, myr.push);
     print_op("at (random index)", stdr.at, myr.at);
@@ -329,8 +416,9 @@ int main()
     print_op("pop (N -> empty)", stdr.pop, myr.pop);
 
     std::cout << "\nNotes:\n"
-                 "  mean    = whole loop timed / N (no timer cost)\n"
-                 "  others  = each op timed alone; ~1 ns ops are near timer resolution\n"
-                 "  worst   = includes OS interrupts, which hit both vectors\n";
+                 "  mean          = whole loop timed / N, averaged over runs; +- is a 95% range\n"
+                 "  variance etc. = each op timed alone; stddev = sqrt(variance)\n"
+                 "  worst-10 avg  = mean of the 10 slowest ops per run, averaged over runs\n"
+                 "  max           = slowest single op across all runs (mostly OS noise)\n";
     return 0;
 }
