@@ -33,22 +33,26 @@ template <typename T>
 class O1vector
 {
 public:
-    explicit O1vector(int capacity = 1) : m_capacity{capacity}, m_next{new T[m_capacity]}
+    explicit O1vector(size_t capacity = 1) : m_capacity{capacity}, m_cur{new T[m_capacity]}
     {
         assert(m_shrink_at < m_grow_at);
     }
 
     T pop()
     { // python style pop, returns the element, can std::move/copy elision so shouldnt really slow it down anyways
-        assert(not_empty());
+        if (!not_empty())
+        {
+            report_out_of_bounds_indexing(0);
+        }
 
         T temp = std::move(m_cur[m_size - 1]);
         --m_size;
-        handle_next();
+        maybe_start_shrink();
+        step_resize();
         return temp; // std::move() isnt used to allow copy ellision to apply.
     }
 
-    T set(size_t idx, T element)
+    void set(size_t idx, T element)
     {
         // forces you to set an an element < size, i.e. can only be used to modify an existing element. Prevents operations with the m_next array from needing to be handled
 
@@ -57,6 +61,7 @@ public:
             report_out_of_bounds_indexing(idx);
         }
         m_cur[idx] = std::move(element);
+
         if (idx < m_left)
         {
             assert(m_next != nullptr);
@@ -66,28 +71,15 @@ public:
 
     void push(T element)
     {
-        if (m_size + 1 >= m_capacity) // if attempting to push and array is full, swap to larger array before.
-        {
-            handle_next();
-        }
+
+        assert(m_size < m_capacity);
         m_cur[m_size] = std::move(element);
         ++m_size;
-        handle_next();
+        maybe_start_grow();
+        step_resize();
     }
 
-    T at(size_t idx) const
-    {
-
-        if (idx >= m_size)
-        {
-            // 0-based indexing
-            report_out_of_bounds_indexing(idx);
-        }
-
-        return m_cur[idx];
-    }
-
-    const T *at_ptr(size_t idx) // no garuntees this will be valid after any pop/push operation
+    const T *at_ptr(size_t idx) const // no garuntees this will be valid after any pop/push operation
     {
         if (idx >= m_size)
         {
@@ -98,24 +90,41 @@ public:
         return &m_cur[idx];
     }
 
-    size_t size()
+    T at(size_t idx) const
+    {
+
+        return *at_ptr(idx);
+    }
+
+    size_t size() const
     {
         return m_size;
     }
 
-    bool not_empty() // I think !vec.is_empty() is used a lot more then vec.is_empty, I think checking its not empty is cleaner
+    bool not_empty() const // I think !vec.is_empty() is used a lot more then vec.is_empty, I think checking its not empty is cleaner
     {
         return m_size != 0;
+    }
+
+    size_t capacity() const
+    {
+        return m_capacity;
+    }
+
+    size_t next_capacity() const
+    {
+        return m_next_capacity;
     }
 
 private:
     // paramater values
     int m_resize_factor{2};
 
-    float m_grow_at{1 / 2};   // when size is at c/m_grow_at start creating a bigger vector
-    float m_shrink_at{1 / 8}; // when size is c/m_shrink_at, start creating a smaller vector
-    int m_move_for_grow{2};   // number of elements to move when vector is in growing position
-    int m_move_for_shrink{3}; // number of elements to move when vector is in in shrinking position
+    float m_grow_at{1.0f / 2};   // when size is at c/m_grow_at start creating a bigger vector
+    float m_shrink_at{1.0f / 8}; // when size is c/m_shrink_at, start creating a smaller vector
+    int m_move_for_grow{2};      // number of elements to move when vector is in growing position
+    int m_move_for_shrink{3};    // number of elements to move when vector is in in shrinking position
+    int m_moves_per_op{};
 
     size_t m_size{0};
     size_t m_capacity;
@@ -124,7 +133,16 @@ private:
     size_t m_next_capacity{0};
     size_t m_left{0}; // all indexes < m_left exist in cur and m_next
 
-    void swap_to_next()
+    void start_resize(size_t new_capacity, int moves)
+    {
+        new_capacity = std::max(new_capacity, static_cast<size_t>(1)); // enforces min size of 1
+        m_next_capacity = new_capacity;
+        m_next = new T[m_next_capacity];
+        m_left = 0;
+        m_moves_per_op = moves;
+    }
+
+    void finish_resize()
     {
         delete[] m_cur;
         m_cur = m_next;
@@ -134,11 +152,14 @@ private:
         m_next_capacity = 0;
     }
 
-    void handle_shrink()
+    void step_resize()
     {
-        assert(m_next != nullptr);
+        if (m_next == nullptr)
+        {
+            return;
+        }
 
-        for (int i{0}; i < m_move_for_shrink; ++i)
+        for (int i{0}; i < m_moves_per_op; ++i)
         {
             if (m_left == m_size)
                 break;
@@ -146,62 +167,26 @@ private:
             m_next[m_left] = m_cur[m_left];
             ++m_left;
         }
-        if (m_left == m_size)
-        {
-            swap_to_next();
-        }
-    }
-    // TODO: repeated logic
-    void handle_grow() // TODO: maybe i dont need this? push should only ever need to handle grow, pop only ever needs handle shrink. And i can pass the next element into handle grow meaning i dont need to handle the wierd case of calling it before and after pushing
-    {
-        assert(m_next != nullptr);
-
-        for (int i{0}; i < m_move_for_grow; ++i)
-        {
-            if (m_left == m_size)
-                break;
-
-            // TODO: if T is large this copy is expensive. where T is large I can have it so I move instead of copy.
-            // however this has a trade off, when doing an index the element may exist in one of two arrays, if index heavy this might have some preformance issues, which is why I just want to copy cheap types
-            m_next[m_left] = m_cur[m_left];
-            ++m_left;
-        }
 
         if (m_left == m_size)
         {
-            swap_to_next();
+            finish_resize();
         }
     }
-    // TODO: name better?
-    void handle_next()
-    {
-        if (m_size >= m_capacity * m_grow_at)
-        {
-            if (m_next == nullptr)
-            {
-                m_next_capacity = m_capacity * m_resize_factor;
-                m_next = new T[m_next_capacity];
-                m_left = 0;
-            }
 
-            handle_grow();
-        }
-        else if (m_size <= m_capacity * m_shrink_at)
+    void maybe_start_shrink()
+    {
+        if (m_next == nullptr && (m_size <= m_capacity * m_shrink_at))
         {
-            if (m_next == nullptr)
-            {
-                m_next_capacity = m_capacity / m_resize_factor;
-                m_next = new T[m_next_capacity];
-                m_left = 0;
-            }
-            handle_shrink();
+            start_resize(m_capacity / m_resize_factor, m_move_for_shrink);
         }
-        else
+    }
+
+    void maybe_start_grow()
+    {
+        if (m_next == nullptr && (m_size >= m_capacity * m_grow_at))
         {
-            delete[] m_next;
-            m_next = nullptr;
-            m_next_capacity = 0;
-            m_left = 0;
+            start_resize(m_capacity * m_resize_factor, m_move_for_grow);
         }
     }
 };
