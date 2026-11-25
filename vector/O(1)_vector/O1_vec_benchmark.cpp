@@ -8,7 +8,7 @@
 //   - mean          whole loop timed at once / N (no timer cost)
 //   - variance      every op timed on its own (rdtsc), ns^2
 //   - p99.9         99.9% of ops were at least this fast
-//   - worst-10 avg  mean of the 10 slowest ops in that run
+//   - worst-5 avg   mean of the 5 slowest ops in that run
 //   - max           the single slowest op in that run
 //
 // The table shows each of those averaged over all runs (max = overall max).
@@ -45,7 +45,7 @@
 constexpr size_t N{1 << 21};   // ops per run (~2 million)
 constexpr int RUNS{50};        // separate runs per vector
 constexpr int WARMUP_RUNS{2};  // thrown away: page faults, CPU clock ramp-up
-constexpr size_t WORST_K{10};  // "worst-10 avg" = mean of this many slowest ops
+constexpr size_t WORST_K{5};  // "worst-5 avg" = mean of this many slowest ops
 
 // =====================================================================
 // Timing helpers
@@ -132,7 +132,7 @@ struct RunStats
     double mean_ns;   // bulk pass
     double variance;  // ns^2
     double p999_ns;
-    double worst10_ns;
+    double worst_ns;
     double max_ns;
 };
 
@@ -282,7 +282,7 @@ struct Summary
     double variance;
     double stddev;    // sqrt(variance)
     double p999_ns;
-    double worst10_ns;
+    double worst_ns;
     double max_ns;    // max over all runs
 };
 
@@ -295,7 +295,7 @@ Summary summarise(const std::vector<RunStats> &runs)
         s.mean_ns += x.mean_ns / r;
         s.variance += x.variance / r;
         s.p999_ns += x.p999_ns / r;
-        s.worst10_ns += x.worst10_ns / r;
+        s.worst_ns += x.worst_ns / r;
         s.max_ns = std::max(s.max_ns, x.max_ns);
     }
     s.stddev = std::sqrt(s.variance);
@@ -329,7 +329,7 @@ void print_row(const std::string &name, const Summary &s)
                              std::format("{:.3f} +-{:.3f}", s.mean_ns, s.mean_ci95),
                              std::format("{:.1f}", s.variance),
                              fmt_ns(s.stddev), fmt_ns(s.p999_ns),
-                             fmt_ns(s.worst10_ns), fmt_ns(s.max_ns));
+                             fmt_ns(s.worst_ns), fmt_ns(s.max_ns));
 }
 
 std::string compare(const char *what, double std_v, double my_v)
@@ -349,14 +349,14 @@ void print_op(const std::string &op, const std::vector<RunStats> &stdr,
     std::cout << '\n'
               << op << '\n';
     std::cout << std::format(ROW, "", "mean ns", "variance ns^2", "stddev",
-                             "p99.9", "worst-10 avg", "max");
+                             "p99.9", "worst-5 avg", "max");
     print_row("std::vector", a);
     print_row("O1vector", b);
 
     bool means_overlap{std::abs(a.mean_ns - b.mean_ns) <= a.mean_ci95 + b.mean_ci95};
     std::cout << "  O1vector: " << compare("mean", a.mean_ns, b.mean_ns)
               << (means_overlap ? " (ranges overlap: may be noise)" : "")
-              << ", " << compare("worst-10 avg", a.worst10_ns, b.worst10_ns) << '\n';
+              << ", " << compare("worst-5 avg", a.worst_ns, b.worst_ns) << '\n';
 }
 
 // =====================================================================
@@ -418,7 +418,7 @@ int main()
     std::cout << "\nNotes:\n"
                  "  mean          = whole loop timed / N, averaged over runs; +- is a 95% range\n"
                  "  variance etc. = each op timed alone; stddev = sqrt(variance)\n"
-                 "  worst-10 avg  = mean of the 10 slowest ops per run, averaged over runs\n"
+                 "  worst-5 avg   = mean of the 5 slowest ops per run, averaged over runs\n"
                  "  max           = slowest single op across all runs (mostly OS noise)\n";
     return 0;
 }
