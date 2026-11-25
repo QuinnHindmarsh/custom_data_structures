@@ -58,18 +58,15 @@ open_map<K, V,
          max_load_factor = 0.75f>  // grow once size > capacity * max_load_factor
 ```
 
-The starting capacity (constructor argument, default 2) must be a power of 2.
-
 #### How it works
-
-**1. One flat array of slots.**
-Every key/value pair lives directly in a `std::vector` of slots. There are no linked-list nodes and no per-element allocations. A lookup reads neighbouring slots in memory, which keeps it cache-friendly. `std::unordered_map` allocates a separate node for every element and follows a pointer to reach each one.
-
-Each slot holds:
-- the key
-- the value
-- a 1-byte **DIB** (distance to initial bucket): how far the slot is from where its key hashed to. `DIB = 1` means it sits in its home slot. `DIB = 0` means the slot is empty.
-- for non-integral keys such as `std::string`, the **full hash** as well (see step 6)
+- 1 flat vector containing slots
+     - each slot holds:
+        - The key
+        - The value
+        - a one byte DIB (distance from inital bucket), how far the key is from where it is hashed to. 0 represents the slot is empty, and thus 1 means it sits in its home slot
+        - For non integral keys the full hash.
+- Linear probing, so more cache friendly then quadratic probing.
+- Linear probing can have longer clusters then quadratic probing, this is partially addressed through a lower load factor and robin hood hashing
 
 **2. Picking the home slot: Fibonacci hashing.**
 Capacity is always a power of 2. The hash is multiplied by `0x9E3779B97F4A7C15` (2^64 / φ), and the **top** bits of the result give the slot index. This spreads out weak hashes. That matters because `std::hash<int>` is the identity function, so close-together integer keys would otherwise land in close-together slots.
