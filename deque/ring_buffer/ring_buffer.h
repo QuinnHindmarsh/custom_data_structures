@@ -14,6 +14,12 @@ fixes
 
 optimisations
 - manage my own memory? why am I using std::vector?
+    - std::allocator, std::construct at. also removes default initilisation requirement
+- thread to allocate in advanced when it is nearing capacity
+- thread to then clean up the whole vec
+- head/tail node cached
+- remove capacity
+- take in T as a const ref then construct directly?
 
 expansions
 - .emplace
@@ -62,6 +68,7 @@ public:
 
         return m_buf[m_head & m_mask];
     }
+
 
     void push_back(T element)
     {
