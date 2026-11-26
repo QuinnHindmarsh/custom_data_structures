@@ -31,6 +31,7 @@ open_map<std::string, int> ages;
 ages.insert("alice", 30);          // inserts, or overwrites if present
 if (int *age = ages.find("alice")) // nullptr if missing
     *age += 1;
+ages["bob"] += 5;                  // like std::unordered_map: inserts 0 first if missing
 ages.erase("alice");
 ```
 
@@ -61,13 +62,14 @@ open_map<K, V, Hash = std::hash<K>, Eq = std::equal_to<K>,
 #### Limitations
 
 - Never shrinks.
-- No iterators, `size()` or `operator[]`.
-- `find`'s pointer is invalidated by any insert or erase.
+- No iteratorsor.
+- `operator[]` needs a default constructible `V`, and only takes a `K` (no `const char*` shortcut like `insert` has).
+- The pointer from `find` and the reference from `[]` are invalidated by any insert or erase, including a `[]` on a missing key.
 
 #### Testing
 
-- [`open_map_differental_test.cpp`](hashmap/open_map/open_map_differental_test.cpp): 1M random ops against `std::unordered_map`, checking `find` agrees after every one.
-- [`open_map_check.cpp`](hashmap/open_map/open_map_check.cpp): explicitly instantiates `open_map<std::string, std::string>` so every member compiles.
+- [`open_map_differental_test.cpp`](hashmap/open_map/open_map_differental_test.cpp): 1M random ops (insert, erase, find, update through `find`, read and write with `[]`) against `std::unordered_map`, checking `find` agrees after every one. `[]` reads also check the returned value matches and the reference points at the same slot as `find`.
+- [`open_map_check.cpp`](hashmap/open_map/open_map_check.cpp): explicitly instantiates `open_map<int, int>` so every member compiles, and runs `[]` on a present and a missing key.
 
 #### Performance vs `std::unordered_map`
 
@@ -95,7 +97,16 @@ O1vector<int> v;
 v.push(5);
 v.set(0, 6);       // only existing indices, throws if out of range
 int x = v.at(0);   // bounds-checked
+int z = v[0];      // not bounds-checked, read-only
 int y = v.pop();   // throws if empty
+```
+
+Bad calls throw `std::out_of_range`, like `std::vector::at`. The message names the call, the index and the size:
+
+```
+O1vector::at(3): index out of range, size is 3 (valid indices are 0 to 2)
+O1vector::set(0): index out of range, the vector is empty
+O1vector::pop(): can't pop, the vector is empty
 ```
 
 #### How it works
@@ -103,22 +114,24 @@ int y = v.pop();   // throws if empty
 - 2 arrays: `m_cur` (always holds every element) and `m_next` (the resize target, `nullptr` when no resize is running).
 - At half full, it allocates an array of double the size. Each push or pop then copies 4 elements across, so the copy finishes before `m_cur` fills up.
 - At 1/8 full, it starts shrinking to half size the same way. The gap between 1/2 and 1/8 stops it flipping between growing and shrinking.
-- `at` only reads `m_cur`. `set` writes to `m_cur`, and also to `m_next` if that index has already been copied.
+- `at` and `[]` only read `m_cur`. `set` writes to `m_cur`, and also to `m_next` if that index has already been copied.
 
 #### Fun bits
 
 - **Background freer.** `delete[]` on a big array is itself a latency spike, so old arrays of 256 KB or more go to a shared worker thread ([`freer.h`](<vector/O(1)_vector/freer.h>)) that frees them in batches.
 - **`set` stays simple.** It only accepts existing indices, so it never has to handle an element that only lives in `m_next`.
+- **`[]` is read-only.** It returns `const T&`. A writable `T&` would write only to `m_cur`, so mid-resize the copy in `m_next` would go stale. All writes go through `set`.
+- **Cheap checks, cold messages.** The bounds checks inline into the hot path. The error message is only built in a separate `[[noreturn]]` function, which only runs once something has gone wrong.
 
 #### Limitations
 
 - **Built for cheap types like `int`.** Elements are copied with `std::copy_n`, and `set` writes some elements twice. Large types like `std::string` would need a specialisation that moves elements with `std::move()` and checks which array an element lives in before operating on it.
 - **No batch operations.** No range insert, `reserve`, or bulk pop, so filling it is always one element at a time.
-- **Small interface.** No iterators, `operator[]`, `emplace`, `shrink_to_fit` or copying.
+- **Small interface.** No iterators, writable `operator[]`, `emplace`, `shrink_to_fit` or copying.
 
 #### Testing
 
-- [`O1_vec_compare_test.cpp`](<vector/O(1)_vector/O1_vec_compare_test.cpp>): runs the same random ops on an `O1vector` and a `std::vector`, and checks both hold the same elements after every op.
+- [`O1_vec_compare_test.cpp`](<vector/O(1)_vector/O1_vec_compare_test.cpp>): runs the same random ops on an `O1vector` and a `std::vector`, and checks both hold the same elements after every op, read through `at`, `at_ptr` and `[]`. Also checks `[]` mid-grow and mid-shrink, and the exact exception type and message for every bad call.
 - [`O1_vec_basic_test.cpp`](<vector/O(1)_vector/O1_vec_basic_test.cpp>): a quick smoke test, plus an explicit instantiation so every member compiles.
 - [`freer_test.cpp`](<vector/O(1)_vector/freer_test.cpp>): queues thousands of arrays on the freer and checks it drains and shuts down cleanly.
 

@@ -12,6 +12,7 @@
 #include <format>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "O(1)_vector.h"
@@ -109,6 +110,19 @@ public:
             if (*m_mine.at_ptr(i) != m_expected[i])
             {
                 report(std::format("*at_ptr({}) is {}, std has {}", i, *m_mine.at_ptr(i), m_expected[i]));
+                return false;
+            }
+
+            if (m_mine[i] != m_expected[i])
+            {
+                report(std::format("[{}] is {}, std has {}", i, m_mine[i], m_expected[i]));
+                return false;
+            }
+
+            // [] must return a reference to the stored element, not a copy
+            if (&m_mine[i] != m_mine.at_ptr(i))
+            {
+                report(std::format("&[{}] and at_ptr({}) point at different elements", i, i));
                 return false;
             }
         }
@@ -381,6 +395,86 @@ bool test_out_of_bounds_throws()
     return true;
 }
 
+// operator[] on its own: reads the right element after every push (so
+// also mid-grow and mid-shrink), sees writes made by set(), and works on a
+// const vector.
+bool test_index_operator()
+{
+    O1vector<int> mine;
+    for (int i{0}; i < 1000; ++i)
+    {
+        mine.push(i * 3);
+        CHECK(mine[0] == 0);
+        CHECK(mine[mine.size() - 1] == i * 3);
+        CHECK(mine[mine.size() / 2] == mine.at(mine.size() / 2));
+    }
+
+    mine.set(0, -1);   // already copied if a resize is running
+    mine.set(999, -2); // last element
+    CHECK(mine[0] == -1);
+    CHECK(mine[999] == -2);
+
+    const O1vector<int> &as_const = mine;
+    CHECK(as_const[0] == -1);
+    CHECK(&as_const[500] == mine.at_ptr(500));
+
+    // pop down through shrinks, [] still lines up with at()
+    while (mine.size() > 1)
+    {
+        mine.pop_no_return();
+        CHECK(mine[mine.size() - 1] == mine.at(mine.size() - 1));
+        CHECK(mine[0] == -1);
+    }
+    return true;
+}
+
+// Returns e.what() of the std::out_of_range that `code` throws, or "" if it
+// doesn't throw. Any other exception type escapes and fails the test.
+template <typename Code>
+std::string out_of_range_message(Code code)
+{
+    try
+    {
+        code();
+    }
+    catch (const std::out_of_range &e)
+    {
+        return e.what();
+    }
+    return "";
+}
+
+// Errors are std::out_of_range (like std::vector::at), and the message
+// names the function, the bad index and the size.
+bool test_error_messages()
+{
+    O1vector<int> mine;
+
+    CHECK(out_of_range_message([&]
+                               { mine.pop(); }) == "O1vector::pop(): can't pop, the vector is empty");
+    CHECK(out_of_range_message([&]
+                               { mine.pop_no_return(); }) == "O1vector::pop_no_return(): can't pop, the vector is empty");
+    CHECK(out_of_range_message([&]
+                               { mine.at(0); }) == "O1vector::at(0): index out of range, the vector is empty");
+
+    for (int i{0}; i < 3; ++i)
+    {
+        mine.push(i);
+    }
+
+    CHECK(out_of_range_message([&]
+                               { mine.at(3); }) == "O1vector::at(3): index out of range, size is 3 (valid indices are 0 to 2)");
+    CHECK(out_of_range_message([&]
+                               { mine.at_ptr(10); }) == "O1vector::at_ptr(10): index out of range, size is 3 (valid indices are 0 to 2)");
+    CHECK(out_of_range_message([&]
+                               { mine.set(7, 1); }) == "O1vector::set(7): index out of range, size is 3 (valid indices are 0 to 2)");
+
+    // valid calls don't throw
+    CHECK(out_of_range_message([&]
+                               { mine.at(2); }) == "");
+    return true;
+}
+
 // =====================================================================
 // Runner
 // =====================================================================
@@ -421,6 +515,8 @@ int main()
     run("random ints", test_random_ints);
     run("random strings", test_random_strings);
     run("out of bounds throws", test_out_of_bounds_throws);
+    run("operator[]", test_index_operator);
+    run("error messages", test_error_messages);
 
     std::cout << '\n'
               << (g_failed == 0 ? "ALL PASSED" : std::format("{} TEST(S) FAILED", g_failed)) << '\n';
