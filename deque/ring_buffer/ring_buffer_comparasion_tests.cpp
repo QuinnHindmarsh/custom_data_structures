@@ -9,18 +9,6 @@
 #include <string>
 #include "../../shared_utility/random.h"
 
-bool throws(const auto &fn)
-{
-    try
-    {
-        fn();
-    }
-    catch (...)
-    {
-        return true;
-    }
-    return false;
-}
 
 template <typename T>
 class Both
@@ -48,7 +36,7 @@ private:
 
 public:
     // dq starts empty: std::deque(n) would create n default elements
-    explicit Both(size_t capacity = 1) : rb(capacity) {}
+    explicit Both(size_t capacity = 1) : rb(capacity), dq{} {}
 
     size_t size() const { return dq.size(); }
 
@@ -70,6 +58,7 @@ public:
 
     void push_back(const T &value)
     {
+
         rb.push_back(value);
         dq.push_back(value);
         ++operations;
@@ -78,6 +67,7 @@ public:
 
     void push_front(const T &value)
     {
+
         rb.push_front(value);
         dq.push_front(value);
         ++operations;
@@ -86,6 +76,9 @@ public:
 
     void pop_back()
     {
+        if (dq.empty())
+
+
         if (rb.back() != dq.back())
             report_mismatch("pop_back - back before pop");
         rb.pop_back();
@@ -100,6 +93,8 @@ public:
 
     void pop_front()
     {
+
+
         if (rb.front() != dq.front())
             report_mismatch("pop_front - front before pop");
         rb.pop_front();
@@ -113,6 +108,7 @@ public:
 
     void pop_back_and_check()
     {
+
         T back_rb = rb.back();
         T back_dq = dq.back();
         dq.pop_back();
@@ -127,6 +123,8 @@ public:
 
     void pop_front_and_check()
     {
+
+
         T front_rb = rb.front();
         T front_dq = dq.front();
         dq.pop_front();
@@ -186,25 +184,56 @@ std::map<std::string, Op<T>> make_operations(Gen gen)
     };
 }
 
-void test_int(int N)
+void test_int32(int N)
 {
     Both<int32_t> both;
     auto ops = make_operations<int32_t>(random::i32);
 
     for (int i{0}; i < N; ++i)
     {
-        auto it = std::next(ops.begin(), random::get_range<size_t>(0, ops.size() - 1));
+        auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
         it->second(both); // call it
     }
-    both.check(); // final full comparison
+    both.check();
 }
 
-void test_uint(int N)
+void test_uint64(int N)
 {
+    Both<uint64_t> both;
+    auto ops = make_operations<uint64_t>(random::u64);
+
+    for (int i{0}; i < N; ++i)
+    {
+        auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
+        it->second(both); // call it
+    }
+    both.check();
+}
+
+void test_string(int N)
+{
+    Both<std::string> both;
+    auto gen{
+        []()
+        {
+            return random::string(random::range<size_t>(0, 32));
+        }};
+    auto ops = make_operations<std::string>(gen);
+
+    for (int i{0}; i < N; ++i)
+    {
+        auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
+        it->second(both); // call it
+    }
+    both.check();
 }
 
 int main()
 {
-    test_int(1'000'000);
-    std::cout << "test_int passed\n";
+    test_int32(1'000'000);
+    std::cout << "test_int32 passed\n";
+    test_uint64(1'000'000);
+    std::cout << "test_uint64 passed\n";
+    test_string(100'000);
+    std::cout << "test_string passed\n";
 }
