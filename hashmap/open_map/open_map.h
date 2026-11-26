@@ -38,12 +38,31 @@ struct slot<K, V>
 };
 
 /*
-OPTIMISATIONS/imrpovements
-TODO: I could do a struct slots that holds a vector of key,dib pairs (hash/dib pairs for non integrals), and a vector of values. This allows more elements to be loaded in the cache line as DIB and key need to be checked much more then value
-TODO: I never resize do`wnwards
+TODO:
+
+improvments
+    - itterators
+
+optimisations/optimisations to consdier
+    - My own hash function?
+    - Quadratic probing would reduce clustering, but has worse cache locality,
+        and clustering is already somewhat addressed with robin hood hashing, and low load factor
+    - compare to using second hashing?
+    - refactoring storage
+    - auto adjust max_load_factor based on size of K and V?
+
+
+
+storage refactor idea:
+struct mp{
+    vector<pair<key, DIB>> keys;
+    vector<pair<hash,value>>P values;
+
+    // keys[i].first is key for values[i].second
+    }
+I am mainly checking DIB and key when itterating, this would allow more keys and DIBs to exist in one cache line. Then when the matching key is found it requires one additonal memory jump
 
 */
-
 template <Hashable K, typename V, typename hash = std::hash<K>, typename eq = std::equal_to<K>, const int resize_factor = 2, const float max_load_factor = 0.75f>
 class open_map
 {
@@ -152,6 +171,11 @@ public:
         }
         m_slots[last_idx].DIB = 0;
         --m_size;
+    }
+
+    size_t size()
+    {
+        return m_size;
     }
 
 private:

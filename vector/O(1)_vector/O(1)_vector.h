@@ -6,26 +6,20 @@
 #include <algorithm> // std::max
 #include <thread>
 
-[[noreturn]] void report_out_of_bounds_indexing(size_t idx)
-{
-    throw std::runtime_error(std::format("Invalid indexation: '{}' failed as this index does not exist.",
-                                         idx));
-}
-
 /*
 
 This is soley designed for cheap types -> optimisations have been made with the primary goal of optimising for int32_t. Optimisations for non cheap to copy objects like string would look very different. I may explore this in future
 TODO:
-    - improve error messages
-    - to add to interface?
-        - .begin()
-        - .end()
-        - [] overload? after ch21?
-        - .shrink_to_fit?
-        - .emplace_back()?
+interface
+    - reserve
+    - itterators
+    - exmplace
+
 
 optimisations
     - copy in chunks, std::copy. copy 16 every 8 ops etc
+    - better support none integral types - only store 1 copy of each element and check m_left to find what array it is in.
+        - this would have the side effect of allowing writable [] operators
 
 */
 
@@ -50,10 +44,7 @@ public:
 
     void pop_no_return()
     {
-        if (!not_empty()) [[unlikely]]
-        {
-            report_out_of_bounds_indexing(0);
-        }
+        check_not_empty("pop_no_return");
 
         --m_size;
         maybe_start_shrink();
@@ -62,10 +53,7 @@ public:
 
     T pop() //  code duplication for the sake of not needing to repeat bounds check
     {
-        if (!not_empty()) [[unlikely]]
-        {
-            report_out_of_bounds_indexing(0);
-        }
+        check_not_empty("pop");
 
         T temp = std::move(m_cur[m_size - 1]);
         --m_size;
@@ -78,10 +66,7 @@ public:
     {
         // forces you to set an an element < size, i.e. can only be used to modify an existing element. Prevents operations with the m_next array from needing to be handled
 
-        if (idx >= m_size) [[unlikely]]
-        {
-            report_out_of_bounds_indexing(idx);
-        }
+        check_index(idx, "set");
         m_cur[idx] = std::move(element);
 
         if (idx < m_left)
@@ -103,19 +88,14 @@ public:
 
     const T *at_ptr(size_t idx) const // no garuntees this will be valid after any pop/push operation
     {
-        if (idx >= m_size) [[unlikely]]
-        {
-            // 0-based indexing
-            report_out_of_bounds_indexing(idx);
-        }
-
+        check_index(idx, "at_ptr");
         return &m_cur[idx];
     }
 
     T at(size_t idx) const
     {
-
-        return *at_ptr(idx);
+        check_index(idx, "at"); // own check (not via at_ptr) so the error names at()
+        return m_cur[idx];
     }
 
     size_t size() const
@@ -157,6 +137,44 @@ private:
     size_t m_left{0}; // all indexes < m_left exist in cur and m_next
     size_t m_shrink_threashold;
     size_t m_grow_threashold;
+
+    // ---------- error reporting ----------
+    // the checks stay small so they inline into the hot path, the message is only built in the
+    // [[noreturn]] reporters, which only run when something has already gone wrong.
+    // op is the public function's name, so the message says which call failed.
+
+    void check_index(size_t idx, const char *op) const
+    {
+        if (idx >= m_size) [[unlikely]]
+        {
+            report_bad_index(idx, op);
+        }
+    }
+
+    void check_not_empty(const char *op) const
+    {
+        if (m_size == 0) [[unlikely]]
+        {
+            report_empty(op);
+        }
+    }
+
+    // e.g. "O1vector::at(5): index out of range, size is 3 (valid indices are 0 to 2)"
+    [[noreturn]] void report_bad_index(size_t idx, const char *op) const
+    {
+        if (m_size == 0)
+        {
+            throw std::out_of_range(std::format("O1vector::{}({}): index out of range, the vector is empty", op, idx));
+        }
+        throw std::out_of_range(std::format("O1vector::{}({}): index out of range, size is {} (valid indices are 0 to {})",
+                                            op, idx, m_size, m_size - 1));
+    }
+
+    // e.g. "O1vector::pop(): can't pop, the vector is empty"
+    [[noreturn]] static void report_empty(const char *op)
+    {
+        throw std::out_of_range(std::format("O1vector::{}(): can't pop, the vector is empty", op));
+    }
 
     void update_threasholds()
     {
