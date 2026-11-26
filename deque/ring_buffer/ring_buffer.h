@@ -20,12 +20,6 @@ expansions
 - itterators
 */
 
-[[noreturn]] void
-report_out_of_bounds()
-{
-    throw std::runtime_error("deque is empty ");
-}
-
 template <std::default_initializable T>
 class ring_buffer
 {
@@ -47,27 +41,18 @@ public:
 
     void pop_front()
     {
-        if (empty())
-        {
-            report_out_of_bounds();
-        }
-
         ++m_head;
     }
 
     T pop_front_return()
     {
-        pop_front();
-        return std::move(m_buf[(m_head - 1) & m_mask]);
-        ; // If i ever add auto shrinking this will break, not a hard fix if i ever do
+
+        return std::move(m_buf[(m_head++) & m_mask]);
+        ;
     }
 
     const T &front() const
     {
-        if (empty())
-        {
-            report_out_of_bounds();
-        }
 
         return m_buf[m_head & m_mask];
     }
@@ -75,7 +60,7 @@ public:
     T &front()
     {
 
-        return const_cast<T &>(std::as_const(*this).front());
+        return m_buf[m_head & m_mask];
     }
 
     void push_back(T element)
@@ -90,36 +75,24 @@ public:
 
     void pop_back()
     {
-        if (empty())
-        {
-            report_out_of_bounds();
-        }
-
         --m_tail;
     }
 
     T pop_back_return()
     {
 
-        pop_back();
-        return std::move(m_buf[m_tail & m_mask]);
-        ; // If i ever add auto shrinking this will break, not a hard fix if i ever do
+        return std::move(m_buf[--m_tail & m_mask]);
     }
 
     const T &back() const
     {
-        if (empty())
-        {
-            report_out_of_bounds();
-        }
 
         return m_buf[(m_tail - 1) & m_mask];
     }
 
     T &back()
     {
-
-        return const_cast<T &>(std::as_const(*this).back());
+        return m_buf[(m_tail - 1) & m_mask];
     }
 
     size_t size() const
