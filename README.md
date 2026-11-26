@@ -18,7 +18,10 @@ g++ -std=c++23 -O2 -DNDEBUG hashmap/open_map/open_map_benchmark.cpp -o open_map_
 | [`open_map`](#open_map) | [`hashmap/open_map/open_map.h`](hashmap/open_map/open_map.h) | `std::unordered_map` |
 | [`O1vector`](#o1vector) | [`vector/O(1)_vector/O(1)_vector.h`](<vector/O(1)_vector/O(1)_vector.h>) | `std::vector` |
 
-Shared: [`timer/timer.h`](timer/timer.h), a small `steady_clock` stopwatch used by the benchmarks.
+Shared: 
+- [`shared_utility/timer.h`](shared_utility/timer.h), a small `steady_clock` stopwatch used by the benchmarks.
+- [`shared_utility/random.h`](shared_utility/random.h), basic namepsace allowing for the generation of random numbers. Used for testing purposes.
+
 
 ---
 
