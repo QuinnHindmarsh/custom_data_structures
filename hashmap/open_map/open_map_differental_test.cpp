@@ -1,6 +1,10 @@
 // Differential test: open_map vs std::unordered_map.
-// 1M random operations (insert / erase / find / update-through-find) are applied to both maps,
-// and after every operation the result of find(key) is compared.
+// 1M random operations (insert / erase / find / update-through-find / read with [] / write with [])
+// are applied to both maps, and after every operation the result of find(key) is compared.
+//
+// operator[] inserts a default V when the key is missing, on both maps, so a [] read on a missing
+// key is also an insert. The [] read op checks the returned value matches, and that the reference
+// points at the same slot find() returns.
 //
 // Because find/erase take `const K &`, each op also checks:
 //   - the const find() overload agrees with the non-const one (same pointer)
@@ -79,12 +83,12 @@ bool run_test(const char *name, std::uint64_t seed, int key_range)
     std::unordered_map<K, V> ref;
     std::mt19937_64 rng(seed);
 
-    int inserts = 0, erases = 0, finds = 0, updates = 0;
+    int inserts = 0, erases = 0, finds = 0, updates = 0, index_reads = 0, index_writes = 0;
 
     for (int op = 0; op < num_ops; ++op)
     {
         K key = random_value<K>(rng, key_range);
-        int kind = std::uniform_int_distribution<int>(0, 3)(rng);
+        int kind = std::uniform_int_distribution<int>(0, 5)(rng);
         const char *op_name = "";
 
         if (kind == 0)
@@ -107,7 +111,7 @@ bool run_test(const char *name, std::uint64_t seed, int key_range)
             op_name = "find";
             ++finds;
         }
-        else
+        else if (kind == 3)
         {
             // update through the pointer find() returns: *find(key) = new value
             op_name = "update via find";
@@ -117,6 +121,36 @@ bool run_test(const char *name, std::uint64_t seed, int key_range)
                 *p = value;
             if (auto it = ref.find(key); it != ref.end())
                 it->second = value;
+        }
+        else if (kind == 4)
+        {
+            // read with []: inserts V{} on both maps if the key is missing
+            op_name = "read via []";
+            ++index_reads;
+            V &got_ref = mine[key];
+            const V &ref_value = ref[key];
+            if (got_ref != ref_value)
+            {
+                std::cout << "FAIL " << name << " (seed " << seed << ") at op #" << op << ": " << op_name << "("
+                          << printable(key) << ")\n  open_map[] returned " << printable(got_ref)
+                          << ", unordered_map[] returned " << printable(ref_value) << '\n';
+                return false;
+            }
+            if (&got_ref != mine.find(key))
+            {
+                std::cout << "FAIL " << name << " (seed " << seed << ") at op #" << op << ": " << op_name << "("
+                          << printable(key) << ")\n  [] returned a reference to a different slot than find()\n";
+                return false;
+            }
+        }
+        else
+        {
+            // write with []: inserts if missing, overwrites if present
+            op_name = "write via []";
+            ++index_writes;
+            V value = random_value<V>(rng, 1'000'000);
+            mine[key] = value;
+            ref[key] = value;
         }
 
         // compare find(key) after every operation
@@ -184,7 +218,8 @@ bool run_test(const char *name, std::uint64_t seed, int key_range)
     }
 
     std::cout << "PASS " << name << " (" << inserts << " inserts, " << erases << " erases, " << finds
-              << " finds, " << updates << " updates, final size " << ref.size() << ")\n";
+              << " finds, " << updates << " updates, " << index_reads << " [] reads, " << index_writes
+              << " [] writes, final size " << ref.size() << ")\n";
     return true;
 }
 
