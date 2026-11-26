@@ -187,7 +187,7 @@ RunStats compute_run(double bulk_mean_ns, std::vector<uint64_t> &s)
 
 struct StdVec
 {
-    std::vector<int> v;
+    std::vector<int> v{};
     void push(int x) { v.push_back(x); }
     int pop()
     {
@@ -201,7 +201,7 @@ struct StdVec
 
 struct MyVec
 {
-    O1vector<int> v;
+    O1vector<int> v{};
     void push(int x) { v.push(x); }
     int pop() { return v.pop(); }
     int at(size_t i) const { return v.at(i); }
@@ -214,7 +214,7 @@ struct MyVec
 
 struct AllRuns
 {
-    std::vector<RunStats> push, at, set, pop;
+    std::vector<RunStats> push{}, at{}, set{}, pop{};
 };
 
 template <typename Vec>

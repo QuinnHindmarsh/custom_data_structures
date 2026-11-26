@@ -1,4 +1,4 @@
-#include "freer.h"
+#include "../../shared_utility/freer.h"
 #include <stdexcept>
 #include <format>
 #include <cassert>
@@ -123,7 +123,7 @@ public:
 
 private:
     // paramater values
-    int m_resize_factor{2};
+    size_t m_resize_factor{2};
 
     static constexpr uint8_t m_grow_at_denom{2};   // when size is at c/m_grow_at start creating a bigger vector
     static constexpr uint8_t m_shrink_at_denom{8}; // when size is c/m_shrink_at, start creating a smaller vector
@@ -136,8 +136,8 @@ private:
     T *m_next{nullptr}; // either an array of size c*2 or c/2 or nullptr if no resize is in progress
     size_t m_next_capacity{0};
     size_t m_left{0}; // all indexes < m_left exist in cur and m_next
-    size_t m_shrink_threashold;
-    size_t m_grow_threashold;
+    size_t m_shrink_threashold{0};
+    size_t m_grow_threashold{0};
 
     // ---------- error reporting ----------
     // the checks stay small so they inline into the hot path, the message is only built in the

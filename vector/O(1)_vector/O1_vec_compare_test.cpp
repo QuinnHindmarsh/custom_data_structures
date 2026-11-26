@@ -133,7 +133,7 @@ public:
 
 private:
     O1vector<T> m_mine;
-    std::vector<T> m_expected;
+    std::vector<T> m_expected{};
 
     // Only used to make failure messages helpful.
     std::string m_last_op{"(nothing yet)"};
