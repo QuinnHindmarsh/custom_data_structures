@@ -138,6 +138,8 @@ public:
         return m_next_capacity;
     }
 
+    const T &operator[](std::size_t i) const { return m_cur[i]; }
+
 private:
     // paramater values
     int m_resize_factor{2};

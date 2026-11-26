@@ -8,7 +8,6 @@
 #include <concepts>
 #include <type_traits>
 
-
 template <typename T>
 concept Hashable = requires(T a, T b) {
     { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
@@ -107,6 +106,17 @@ public:
             return &m_slots[idx].value;
         }
         return nullptr;
+    }
+
+    // like std::unordered_map: inserts a default constructed V if key is missing.
+    V &operator[](const K &key)
+        requires std::default_initializable<V>
+    {
+        V *v = find(key);
+        if (v)
+            return *v;
+        insert(key, V{});
+        return *find(key); // insert can swap/rehash, so look the slot up again
     }
 
     void erase(const K &key)
