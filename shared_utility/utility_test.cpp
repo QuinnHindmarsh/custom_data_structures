@@ -19,9 +19,11 @@ int main()
     for (int i{0}; i < 2; ++i)
     {
         std::cout << "--- run " << i + 1 << " ---\n";
-        std::cout << "get_range(1, 6):            " << random::get_range(1, 6) << '\n';
-        std::cout << "get_range(-100, 100):       " << random::get_range(-100, 100) << '\n';
-        std::cout << "get_range(1, (uint64_t)1e18): " << random::get_range(1, static_cast<uint64_t>(1e18)) << '\n';
+        std::cout << "range(1, 6):            " << random::range(1, 6) << '\n';
+        std::cout << "range(-100, 100):       " << random::range(-100, 100) << '\n';
+        std::cout << "range(1, (uint64_t)1e18): " << random::range(1, static_cast<uint64_t>(1e18)) << '\n';
+        std::cout << "range<uint32>(1, 100): " << random::range<uint32_t>(1, 100) << '\n';
+
         std::cout << "u32: " << random::u32() << '\n';
         std::cout << "i32: " << random::i32() << '\n';
         std::cout << "u64: " << random::u64() << '\n';

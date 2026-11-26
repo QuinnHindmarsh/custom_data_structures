@@ -22,7 +22,7 @@ namespace random
     // T is deduced from max only, so get_range(1, (uint64_t)5) works.
     // Requires min <= max.
     template <typename T>
-    inline T get_range(std::type_identity_t<T> min, T max)
+    inline T range(std::type_identity_t<T> min, T max)
     {
         if constexpr (sizeof(T) <= 4)
             return std::uniform_int_distribution<T>(min, max)(mt);
