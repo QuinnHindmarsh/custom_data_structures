@@ -9,7 +9,6 @@
 #include <string>
 #include "../../shared_utility/random.h"
 
-
 template <typename T>
 class Both
 {
@@ -78,9 +77,8 @@ public:
     {
         if (dq.empty())
 
-
-        if (rb.back() != dq.back())
-            report_mismatch("pop_back - back before pop");
+            if (rb.back() != dq.back())
+                report_mismatch("pop_back - back before pop");
         rb.pop_back();
         dq.pop_back();
         // back() on an empty container is invalid, so only compare if something is left
@@ -93,7 +91,6 @@ public:
 
     void pop_front()
     {
-
 
         if (rb.front() != dq.front())
             report_mismatch("pop_front - front before pop");
@@ -123,7 +120,6 @@ public:
 
     void pop_front_and_check()
     {
-
 
         T front_rb = rb.front();
         T front_dq = dq.front();
@@ -178,41 +174,47 @@ std::map<std::string, Op<T>> make_operations(Gen gen)
          {
              if (b.size() == 0)
                  return;
-             size_t idx = random::get_range<size_t>(0, b.size() - 1);
+             size_t idx = random::range<size_t>(0, b.size() - 1);
              b.modify_midle(idx, gen());
          }},
     };
 }
 
-void test_int32(int N)
+void test_int32(int N, int M)
 {
-    Both<int32_t> both;
     auto ops = make_operations<int32_t>(random::i32);
 
-    for (int i{0}; i < N; ++i)
+    for (int i{0}; i < M; ++i)
     {
-        auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
-        it->second(both); // call it
+        Both<int32_t> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
+        for (int j{0}; j < N; ++j)
+        {
+            auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
+            it->second(both); // call it
+        }
+        both.check();
     }
-    both.check();
 }
 
-void test_uint64(int N)
+void test_uint64(int N, int M)
 {
-    Both<uint64_t> both;
     auto ops = make_operations<uint64_t>(random::u64);
 
-    for (int i{0}; i < N; ++i)
+    for (int i{0}; i < M; ++i)
     {
-        auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
-        it->second(both); // call it
+        Both<uint64_t> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
+        for (int j{0}; j < N; ++j)
+        {
+            auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
+            it->second(both); // call it
+        }
+        both.check();
     }
-    both.check();
 }
 
-void test_string(int N)
+void test_string(int N, int M)
 {
-    Both<std::string> both;
+
     auto gen{
         []()
         {
@@ -220,20 +222,24 @@ void test_string(int N)
         }};
     auto ops = make_operations<std::string>(gen);
 
-    for (int i{0}; i < N; ++i)
+    for (int i{0}; i < M; ++i)
     {
-        auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
-        it->second(both); // call it
+        Both<std::string> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
+        for (int j{0}; j < N; ++j)
+        {
+            auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
+            it->second(both); // call it
+        }
+        both.check();
     }
-    both.check();
 }
 
 int main()
 {
-    test_int32(1'000'000);
+    test_int32(10'000, 100);
     std::cout << "test_int32 passed\n";
-    test_uint64(1'000'000);
+    test_uint64(10'000, 100);
     std::cout << "test_uint64 passed\n";
-    test_string(100'000);
+    test_string(1'000, 100);
     std::cout << "test_string passed\n";
 }
