@@ -7,7 +7,17 @@
 #include <bit>
 
 /*
-TODO: overright on pops
+TODO: 
+
+fixes 
+- overright on pops
+
+optimisations
+- 
+
+expansions
+- .emplace
+- itterators
 */
 
 [[noreturn]] void
