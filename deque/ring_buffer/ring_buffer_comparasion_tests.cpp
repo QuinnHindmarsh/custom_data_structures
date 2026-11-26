@@ -1,8 +1,13 @@
 #include <iostream>
 #include <random>
+#include <cstdlib>
 #include "ring_buffer.h"
 #include <deque>
 #include <format>
+#include <map>
+#include <functional>
+#include <string>
+#include "../../shared_utility/random.h"
 
 bool throws(const auto &fn)
 {
@@ -22,30 +27,14 @@ class Both
 {
 private:
     ring_buffer<T> rb;
-    deque<T> dq;
+    std::deque<T> dq;
     int operations{0};
 
     void report_mismatch(std::string_view s)
     {
         std::cout << "missmatch - " << s << " operation count: " << operations << '\n';
         std::cout << "dq size  = " << dq.size() << " rb size = " << rb.size() << '\n';
-        exit();
-    }
-
-    void check()
-    {
-        if (dq.size() != rb.size())
-        {
-            report_mismatch("inside check discovered sizes do not match") break;
-        }
-
-        for (int i = 0; i < dq.size(); ++i)
-        {
-            if (dq[i] != rb[i])
-            {
-                report_mismatch(std::format("inside check - element {}", i));
-            }
-        }
+        std::exit(1);
     }
 
     void check_maybe()
@@ -58,13 +47,32 @@ private:
     }
 
 public:
-    explicit Both(size_t capacity = 1) : rb(capacity), deque(capacity) {}
+    // dq starts empty: std::deque(n) would create n default elements
+    explicit Both(size_t capacity = 1) : rb(capacity) {}
+
+    size_t size() const { return dq.size(); }
+
+    void check()
+    {
+        if (dq.size() != rb.size())
+        {
+            report_mismatch("inside check discovered sizes do not match");
+        }
+
+        for (size_t i = 0; i < dq.size(); ++i)
+        {
+            if (dq[i] != rb[i])
+            {
+                report_mismatch(std::format("inside check - element {}", i));
+            }
+        }
+    }
 
     void push_back(const T &value)
     {
         rb.push_back(value);
         dq.push_back(value);
-        ++operations
+        ++operations;
         check_maybe();
     }
 
@@ -72,29 +80,34 @@ public:
     {
         rb.push_front(value);
         dq.push_front(value);
-        ++opterations;
-
+        ++operations;
         check_maybe();
     }
 
     void pop_back()
     {
         if (rb.back() != dq.back())
-            report_mismatch();
+            report_mismatch("pop_back - back before pop");
         rb.pop_back();
         dq.pop_back();
-        if (rb.back() != dq.back())
-            report_mismatch();
+        // back() on an empty container is invalid, so only compare if something is left
+        if (!dq.empty() && rb.back() != dq.back())
+            report_mismatch("pop_back - back after pop");
 
-        ++opterations;
+        ++operations;
         check_maybe();
     }
 
     void pop_front()
     {
+        if (rb.front() != dq.front())
+            report_mismatch("pop_front - front before pop");
         rb.pop_front();
         dq.pop_front();
-        ++opterations;
+        if (!dq.empty() && rb.front() != dq.front())
+            report_mismatch("pop_front - front after pop");
+
+        ++operations;
         check_maybe();
     }
 
@@ -102,36 +115,96 @@ public:
     {
         T back_rb = rb.back();
         T back_dq = dq.back();
-        dq.pop_bac();
-        if (!(rb.pop_back_return() == back_rb == back_dq))
+        dq.pop_back();
+        T popped = rb.pop_back_return();
+        if (back_rb != back_dq || popped != back_dq)
         {
-            report_mismatch()
+            report_mismatch("pop_back_and_check");
         }
-        ++opterations;
+        ++operations;
         check_maybe();
     }
 
     void pop_front_and_check()
     {
-
         T front_rb = rb.front();
         T front_dq = dq.front();
-
         dq.pop_front();
-        if !(rb.pop_front_return() == front_rb == front_dq)
+        T popped = rb.pop_front_return();
+        if (front_rb != front_dq || popped != front_dq)
         {
-            report_mismatch()
+            report_mismatch("pop_front_and_check");
         }
-        ++opterations;
+        ++operations;
         check_maybe();
     }
 
     void modify_midle(size_t idx, const T &value)
     {
-        dq[i] = value;
-        rb[i] = value;
+        dq[idx] = value;
+        rb[idx] = value;
 
-        ++opterations;
+        ++operations;
         check_maybe();
     }
 };
+
+// Every operation gets the same signature so they can all live in one map.
+template <typename T>
+using Op = std::function<void(Both<T> &)>;
+
+// gen: any function that takes nothing and returns a T, e.g. random::get_i32
+template <typename T, typename Gen>
+std::map<std::string, Op<T>> make_operations(Gen gen)
+{
+    return {
+        {"push_back", [gen](Both<T> &b)
+         { b.push_back(gen()); }},
+
+        {"push_front", [gen](Both<T> &b)
+         { b.push_front(gen()); }},
+
+        {"pop_back", [](Both<T> &b)
+         { if (b.size() > 0) b.pop_back(); }},
+
+        {"pop_front", [](Both<T> &b)
+         { if (b.size() > 0) b.pop_front(); }},
+
+        {"pop_back_and_check", [](Both<T> &b)
+         { if (b.size() > 0) b.pop_back_and_check(); }},
+
+        {"pop_front_and_check", [](Both<T> &b)
+         { if (b.size() > 0) b.pop_front_and_check(); }},
+
+        {"modify_midle", [gen](Both<T> &b)
+         {
+             if (b.size() == 0)
+                 return;
+             size_t idx = random::get_range<size_t>(0, b.size() - 1);
+             b.modify_midle(idx, gen());
+         }},
+    };
+}
+
+void test_int(int N)
+{
+    Both<int32_t> both;
+    auto ops = make_operations<int32_t>(random::i32);
+
+    for (int i{0}; i < N; ++i)
+    {
+        auto it = std::next(ops.begin(), random::get_range<size_t>(0, ops.size() - 1));
+        it->second(both); // call it
+    }
+    both.check(); // final full comparison
+}
+
+void test_uint(int N)
+{
+}
+
+int main()
+{
+    test_int(1'000'000);
+    std::cout << "test_int passed\n";
+}
