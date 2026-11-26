@@ -69,9 +69,9 @@ private:
         }
     }
 
-    std::mutex m_mutex;
-    std::condition_variable m_cv;
-    std::vector<T *> m_queue;
+    std::mutex m_mutex{};
+    std::condition_variable m_cv{};
+    std::vector<T *> m_queue{};
     bool m_stop{false};
-    std::thread m_worker;
+    std::thread m_worker{};
 };
