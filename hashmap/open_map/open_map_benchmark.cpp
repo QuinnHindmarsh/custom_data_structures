@@ -35,7 +35,7 @@
 //   ./open_map_benchmark                 writes open_map_benchmark_results.md
 //   ./open_map_benchmark <file.md>       writes to <file.md>
 
-#include "../../timer/timer.h"
+#include "../../shared_utility/timer.h"
 #include "open_map.h"
 
 #include <algorithm>
@@ -55,7 +55,7 @@
 
 using value_t = std::uint64_t;
 
-constexpr std::size_t N = 1'000'000; // keys in the map, and ops per phase per pass
+constexpr std::size_t N = 1'000'000; // keys in the map, and ops per pease per pass
 
 constexpr std::size_t SWEEP_OPS_INTEGRAL = 20'000'000; // ops per phase, stage 1
 constexpr std::size_t SWEEP_OPS_STRING = 5'000'000;

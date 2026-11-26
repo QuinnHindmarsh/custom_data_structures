@@ -2,6 +2,5 @@
 hashmap/open_map/open_map_check.cpp
 *.exe
 vector/O(1)_vector/test_compiles.cpp
-vector/O(1)_vector/O1_vec_basic_test.cpp
-vector/O(1)_vector/freer_test.cpp
 deque/ring_buffer/ring_buffer_basic_tests.cpp
+shared_utility/utility_test.cpp
