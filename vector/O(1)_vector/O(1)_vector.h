@@ -14,6 +14,7 @@ interface
     - reserve
     - itterators
     - exmplace
+    - properly handle copy/assignment operator
 
 
 optimisations
