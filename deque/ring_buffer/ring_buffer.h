@@ -32,7 +32,7 @@ public:
 
     void push_front(T element)
     {
-        if (m_size == m_capacitty)
+        if (size() == m_capacitty)
         {
             grow();
         }
@@ -45,7 +45,7 @@ public:
     template <typename... Args>
     void emplace_front(Args &&...args)
     {
-        if (m_size == m_capacitty)
+        if (size() == m_capacitty)
         {
             grow();
         }
@@ -80,7 +80,7 @@ public:
 
     void push_back(T element)
     {
-        if (m_size == m_capacitty)
+        if (size() == m_capacitty)
         {
             grow();
         }
@@ -91,20 +91,18 @@ public:
     template <typename... Args>
     void emplace_back(Args &&...args)
     {
-        if (m_size == m_capacitty)
+        if (size() == m_capacitty)
         {
             grow();
         }
         std::construct_at(m_data + (m_tail & m_mask), std::forward<Args>(args)...);
 
         ++m_tail;
-        ++m_size;
     }
     void pop_back()
     {
         --m_tail;
         std::destroy_at(m_data + (m_tail & m_mask));
-        --m_size;
     }
 
     T pop_back_return()
@@ -113,7 +111,6 @@ public:
         T out = std::move(*p);
         std::destroy_at(p);
         --m_tail;
-        --m_size;
         return out;
     }
 
@@ -129,12 +126,12 @@ public:
 
     size_t size() const
     {
-        return m_size;
+        return m_tail - m_head;
     }
 
     bool empty() const
     {
-        return m_size == 0;
+        return size() == 0;
     }
 
     T &operator[](std::size_t i)
@@ -158,7 +155,6 @@ private:
     size_t m_mask;
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
-    size_t m_size{0};
 
     void grow()
     {
@@ -166,7 +162,7 @@ private:
         T *new_data = m_alloc.allocate(new_capacity);
 
         for (size_t i{0};
-             i < m_size;
+             i < size();
              ++i)
         {
             T *src = m_data + ((m_head + i) & m_mask);
