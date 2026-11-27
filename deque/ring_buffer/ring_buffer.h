@@ -9,8 +9,6 @@
 
 /*
 TODO:
-
-
 optimisations
 - thread to allocate in advanced when it is nearing capacity?
 - thread to then dealloc after?
@@ -19,7 +17,6 @@ expansions
 - itterators
 - .at
 */
-
 template <std::move_constructible T>
 class ring_buffer
 {
@@ -34,7 +31,7 @@ public:
     template <typename... Args>
     void emplace_front(Args &&...args)
     {
-        if (size() == m_capacitty)
+        if (size() == m_capacitty) [[unlikely]]
         {
             grow();
         }
@@ -72,7 +69,7 @@ public:
     template <typename... Args>
     void emplace_back(Args &&...args)
     {
-        if (size() == m_capacitty)
+        if (size() == m_capacitty) [[unlikely]]
         {
             grow();
         }
@@ -130,14 +127,15 @@ private:
     std::allocator<T> m_alloc{};
     size_t m_capacitty;
 
-    size_t m_resize_factor{2}; // resize factor being a power of 2, allows for & instead of %
+    static constexpr size_t resize_factor = 2; // resize factor being a power of 2, allows for & instead of %
 
     T *m_data;
     size_t m_mask;
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
 
-    void grow()
+    void grow() [[gnu::noinline]]
+    // TODO: std::memcpy
     {
         size_t new_capacity = m_capacitty * m_resize_factor;
         T *new_data = m_alloc.allocate(new_capacity);
