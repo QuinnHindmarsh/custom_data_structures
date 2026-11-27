@@ -10,7 +10,8 @@
 //                             std::deque has no reserve, so its rows are the plain pushes again.
 //   pop_back / pop_front      N -> empty
 //   index                     N reads at random indices
-//   front / back              N reads, alternating front and back
+//   front                     N reads of front()
+//   back                      N reads of back()
 //   take_back / take_front    read the end element (moved out), then pop it, N -> empty
 //   mixed (avg)               not timed itself: the plain average of the ops above
 //
@@ -43,13 +44,14 @@ enum Op : std::uint8_t
     POP_BACK,
     POP_FRONT,
     INDEX,
-    FRONT_BACK,
+    FRONT,
+    BACK,
     TAKE_BACK,
     TAKE_FRONT,
     NUM_OPS
 };
 constexpr const char *op_names[NUM_OPS]{"push_back", "push_front", "push_back (rsv)", "push_front (rsv)", "pop_back", "pop_front", "index",
-                                        "front / back", "take_back", "take_front"};
+                                        "front", "back", "take_back", "take_front"};
 
 // "Read the element, then pop it". ring_buffer does both in one call, std::deque needs two.
 template <typename T>
@@ -174,8 +176,10 @@ void run_pass(const Data<T> &d, Times &t)
         C c = filled<C>(d);
         t[INDEX].push_back(time_ns_per_op([&]
                                           { for (std::size_t i : d.index) keep(c[i]); }));
-        t[FRONT_BACK].push_back(time_ns_per_op([&]
-                                               { for (std::size_t i = 0; i < N / 2; ++i) { keep(c.front()); keep(c.back()); } }));
+        t[FRONT].push_back(time_ns_per_op([&]
+                                          { for (std::size_t i = 0; i < N; ++i) keep(c.front()); }));
+        t[BACK].push_back(time_ns_per_op([&]
+                                         { for (std::size_t i = 0; i < N; ++i) keep(c.back()); }));
     }
     {
         C c = filled<C>(d);
