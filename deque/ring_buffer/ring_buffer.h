@@ -14,8 +14,6 @@ TODO:
 optimisations
 - thread to allocate in advanced when it is nearing capacity?
 - thread to then dealloc after?
-- head/tail node cached
-- take in T as a const ref then construct directly?
 
 expansions
 - itterators
@@ -42,34 +40,15 @@ public:
         }
         --m_head;
         std::construct_at(m_data + (m_head & m_mask), std::forward<Args>(args)...);
-        m_head_ptr = &(m_data[(m_head & m_mask)]);
     }
 
     void pop_front()
     {
-        if (m_head_ptr)
-        {
-            std::destroy_at(m_head_ptr);
-            m_head_ptr = nullptr;
-        }
-        else
-        {
-            std::destroy_at(m_data + (m_head & m_mask));
-        }
+        std::destroy_at(m_data + (m_head & m_mask));
         ++m_head;
     }
     T pop_front_return()
     {
-
-        if (m_head_ptr)
-        {
-            T out = std::move(*m_head_ptr);
-            std::destroy_at(m_head_ptr);
-            m_head_ptr = nullptr;
-            ++m_head;
-            return out;
-        }
-
         T *p = m_data + (m_head & m_mask);
         T out = std::move(*p);
         std::destroy_at(p);
@@ -79,10 +58,6 @@ public:
 
     const T &front() const
     {
-        if (m_head_ptr)
-        {
-            return *m_head_ptr;
-        }
         return m_data[m_head & m_mask];
     };
 
@@ -109,10 +84,6 @@ public:
     {
         --m_tail;
         std::destroy_at(m_data + (m_tail & m_mask));
-        if (empty())
-        {
-            m_head_ptr = nullptr; // the popped element was also the head
-        }
     }
 
     T pop_back_return()
@@ -121,10 +92,6 @@ public:
         T out = std::move(*p);
         std::destroy_at(p);
         --m_tail;
-        if (empty())
-        {
-            m_head_ptr = nullptr; // the popped element was also the head
-        }
         return out;
     }
 
@@ -169,8 +136,6 @@ private:
     size_t m_mask;
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
-    T *m_head_ptr{nullptr};
-    T *m_tail_ptr{nullptr};
 
     void grow()
     {
@@ -202,6 +167,5 @@ private:
         m_tail = m_capacitty;
         m_capacitty = new_capacity;
         m_mask = new_capacity - 1;
-        m_head_ptr = nullptr; // pointed into the old, now freed buffer
     }
 };
