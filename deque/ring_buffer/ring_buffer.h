@@ -187,9 +187,13 @@ public:
         return m_data[(m_head + i) & m_mask];
     }
 
+    // Never shrinks: asking for less than the current capacity does nothing
     void reserve(size_t n)
     {
-        grow(std::bit_ceil(inital_capacity));
+        if (n > m_capacitty)
+        {
+            grow(std::bit_ceil(n));
+        }
     }
 
 private:
@@ -205,7 +209,7 @@ private:
 
     [[gnu::noinline]] void grow(size_t new_capacity)
     {
-        m_capacitty *resize_factor T *new_data = m_alloc.allocate(new_capacity);
+        T *new_data = m_alloc.allocate(new_capacity);
         size_t h{m_head & m_mask};
         size_t n{size()};
         size_t first{std::min(n, m_capacitty - h)};
@@ -238,7 +242,7 @@ private:
         m_data = new_data;
 
         m_head = 0;
-        m_tail = m_capacitty;
+        m_tail = n; // not m_capacitty: reserve() can grow a buffer that isn't full
         m_capacitty = new_capacity;
         m_mask = new_capacity - 1;
     }

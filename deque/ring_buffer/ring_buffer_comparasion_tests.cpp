@@ -39,18 +39,21 @@ public:
 
     size_t size() const { return dq.size(); }
 
-    void check()
+    void check() { compare(rb, "check"); }
+
+    // Any ring_buffer (rb itself, or a copy of it) must hold exactly what dq holds
+    void compare(const ring_buffer<T> &r, std::string_view where)
     {
-        if (dq.size() != rb.size())
+        if (dq.size() != r.size())
         {
-            report_mismatch("inside check discovered sizes do not match");
+            report_mismatch(std::format("{} - sizes do not match", where));
         }
 
         for (size_t i = 0; i < dq.size(); ++i)
         {
-            if (dq[i] != rb[i])
+            if (dq[i] != r[i])
             {
-                report_mismatch(std::format("inside check - element {}", i));
+                report_mismatch(std::format("{} - element {}", where, i));
             }
         }
     }
@@ -75,10 +78,8 @@ public:
 
     void pop_back()
     {
-        if (dq.empty())
-
-            if (rb.back() != dq.back())
-                report_mismatch("pop_back - back before pop");
+        if (rb.back() != dq.back())
+            report_mismatch("pop_back - back before pop");
         rb.pop_back();
         dq.pop_back();
         // back() on an empty container is invalid, so only compare if something is left
@@ -141,7 +142,89 @@ public:
         ++operations;
         check_maybe();
     }
+
+    // std::deque has no reserve, so only rb changes. reserve moves every element, so check them all now.
+    void reserve(size_t n)
+    {
+        size_t size_before = rb.size();
+        rb.reserve(n);
+        if (rb.size() != size_before)
+            report_mismatch("reserve - size changed");
+
+        ++operations;
+        check();
+    }
+
+    // The copy must match, and must be independent: changing it must not touch rb.
+    void copy_construct(const T &value)
+    {
+        ring_buffer<T> copy(rb);
+        compare(copy, "copy_construct - fresh copy");
+
+        // copy has the same capacity as rb, so if rb is full this push makes the copy grow
+        copy.push_back(value);
+        copy.push_front(value);
+        if (copy.size() != dq.size() + 2 || copy.front() != value || copy.back() != value)
+            report_mismatch("copy_construct - copy after pushes");
+        for (size_t i = 0; i < dq.size(); ++i)
+        {
+            if (copy[i + 1] != dq[i])
+                report_mismatch(std::format("copy_construct - copy element {} after pushes", i));
+        }
+
+        ++operations;
+        check(); // rb untouched
+    }
+
+    // Assign over a buffer that already holds something, plus self-assignment
+    void copy_assign(const T &value)
+    {
+        ring_buffer<T> other;
+        other.push_back(value);
+        other.push_front(value);
+        other = rb;
+        compare(other, "copy_assign - assigned copy");
+
+        ring_buffer<T> &self = rb;
+        rb = self;
+
+        ++operations;
+        check();
+    }
+
+    // Swap rb for a copy of itself, so the next operations run on a copy-constructed buffer
+    void replace_with_copy()
+    {
+        rb = ring_buffer<T>(rb);
+
+        ++operations;
+        check();
+    }
 };
+
+// Counts live objects. Every construction adds 1, every destruction removes 1,
+// so after all containers are gone the count must be back to 0.
+// Not trivially copyable, so it also exercises the uninitialized_move / destroy path in grow().
+struct Tracked
+{
+    static inline long long live{0};
+    int64_t v{};
+
+    Tracked(int64_t x = 0) : v{x} { ++live; }
+    Tracked(const Tracked &o) : v{o.v} { ++live; }
+    Tracked(Tracked &&o) noexcept : v{o.v} { ++live; }
+    Tracked &operator=(const Tracked &) = default;
+    Tracked &operator=(Tracked &&) = default;
+    ~Tracked() { --live; }
+
+    bool operator==(const Tracked &) const = default;
+};
+
+void fail(std::string_view msg)
+{
+    std::cout << "FAIL - " << msg << '\n';
+    std::exit(1);
+}
 
 // Every operation gets the same signature so they can all live in one map.
 template <typename T>
@@ -177,16 +260,31 @@ std::map<std::string, Op<T>> make_operations(Gen gen)
              size_t idx = random::range<size_t>(0, b.size() - 1);
              b.modify_midle(idx, gen());
          }},
+
+        // up to 2x the current size, so some calls are below capacity (must do nothing) and some grow
+        {"reserve", [](Both<T> &b)
+         { b.reserve(random::range<size_t>(0, b.size() * 2 + 8)); }},
+
+        {"copy_construct", [gen](Both<T> &b)
+         { b.copy_construct(gen()); }},
+
+        {"copy_assign", [gen](Both<T> &b)
+         { b.copy_assign(gen()); }},
+
+        {"replace_with_copy", [](Both<T> &b)
+         { b.replace_with_copy(); }},
     };
 }
 
-void test_int32(int N, int M)
+// M rounds of N random operations, each round on a fresh pair with a random starting capacity
+template <typename T, typename Gen>
+void run_random(Gen gen, int N, int M)
 {
-    auto ops = make_operations<int32_t>(random::i32);
+    auto ops = make_operations<T>(gen);
 
     for (int i{0}; i < M; ++i)
     {
-        Both<int32_t> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
+        Both<T> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
         for (int j{0}; j < N; ++j)
         {
             auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
@@ -196,46 +294,82 @@ void test_int32(int N, int M)
     }
 }
 
-void test_uint64(int N, int M)
-{
-    auto ops = make_operations<uint64_t>(random::u64);
-
-    for (int i{0}; i < M; ++i)
-    {
-        Both<uint64_t> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
-        for (int j{0}; j < N; ++j)
-        {
-            auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
-            it->second(both); // call it
-        }
-        both.check();
-    }
-}
+void test_int32(int N, int M) { run_random<int32_t>(random::i32, N, M); }
+void test_uint64(int N, int M) { run_random<uint64_t>(random::u64, N, M); }
 
 void test_string(int N, int M)
 {
+    run_random<std::string>([]
+                            { return random::string(random::range<size_t>(0, 32)); },
+                            N, M);
+}
 
-    auto gen{
-        []()
+// Every starting capacity, including 0 and non powers of 2, gives an empty buffer that works
+void test_constructor()
+{
+    for (size_t cap : {0, 1, 2, 3, 7, 8, 9, 1000})
+    {
+        ring_buffer<int32_t> rb(cap);
+        if (!rb.empty() || rb.size() != 0)
+            fail(std::format("constructor({}) - not empty", cap));
+
+        // enough pushes to wrap and grow past the starting capacity
+        for (int32_t i{0}; i < 20; ++i)
         {
-            return random::string(random::range<size_t>(0, 32));
-        }};
-    auto ops = make_operations<std::string>(gen);
+            rb.push_back(i);
+            rb.push_front(-i);
+        }
+        if (rb.size() != 40 || rb.front() != -19 || rb.back() != 19)
+            fail(std::format("constructor({}) - wrong contents after pushes", cap));
+    }
 
+    ring_buffer<std::string> s;
+    if (!s.empty())
+        fail("default constructor - not empty");
+    s.push_back("a long string that does not fit in SSO");
+    if (s.size() != 1 || s.front() != "a long string that does not fit in SSO")
+        fail("default constructor - wrong contents after push");
+}
+
+// Every element must be destroyed exactly once: not leaked, not destroyed twice
+void test_destructor(int N, int M)
+{
+    // simple case: wrapped contents (pushed on both ends) after several grows
+    {
+        ring_buffer<Tracked> rb;
+        for (int i{0}; i < 100; ++i)
+        {
+            rb.push_back(Tracked{i});
+            rb.push_front(Tracked{-i});
+        }
+        for (int i{0}; i < 30; ++i)
+        {
+            rb.pop_back();
+            rb.pop_front();
+        }
+        if (Tracked::live != 140)
+            fail(std::format("destructor - expected 140 live before destruction, got {}", Tracked::live));
+    }
+    if (Tracked::live != 0)
+        fail(std::format("destructor - simple case left {} live objects", Tracked::live));
+
+    // random ops, including reserve and all the copies
     for (int i{0}; i < M; ++i)
     {
-        Both<std::string> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
-        for (int j{0}; j < N; ++j)
-        {
-            auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
-            it->second(both); // call it
-        }
-        both.check();
+        run_random<Tracked>([]
+                            { return Tracked{random::i64()}; },
+                            N, 1);
+        if (Tracked::live != 0)
+            fail(std::format("destructor - round {} left {} live objects", i, Tracked::live));
     }
 }
 
 int main()
 {
+    test_constructor();
+    std::cout << "test_constructor passed\n";
+    test_destructor(1'000, 100);
+    std::cout << "test_destructor passed\n";
     test_int32(10'000, 100);
     std::cout << "test_int32 passed\n";
     test_uint64(10'000, 100);
