@@ -58,7 +58,6 @@ public:
         std::destroy_at(m_data + (m_head & m_mask));
         ++m_head;
     }
-
     T pop_front_return()
     {
         T *p = m_data + (m_head & m_mask);
@@ -71,23 +70,16 @@ public:
     const T &front() const
     {
         return m_data[m_head & m_mask];
-    }
+    };
 
     T &front()
     {
         return m_data[m_head & m_mask];
     }
 
-    void push_back(T element)
-    {
-        if (size() == m_capacitty)
-        {
-            grow();
-        }
-        // m_data is raw memory, so construct (not assign) into it
-        std::construct_at(m_data + (m_tail & m_mask), std::move(element));
-        ++m_tail;
-    }
+    void push_back(const T &element) { emplace_back(element); }
+    void push_back(T &&element) { emplace_back(std::move(element)); }
+
     template <typename... Args>
     void emplace_back(Args &&...args)
     {
