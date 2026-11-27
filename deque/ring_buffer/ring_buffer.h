@@ -42,7 +42,7 @@ public:
         }
         --m_head;
         std::construct_at(m_data + (m_head & m_mask), std::forward<Args>(args)...);
-        m_head_ptr = m_data[(m_head & m_mask)];
+        m_head_ptr = &(m_data[(m_head & m_mask)]);
     }
 
     void pop_front()
@@ -109,6 +109,10 @@ public:
     {
         --m_tail;
         std::destroy_at(m_data + (m_tail & m_mask));
+        if (empty())
+        {
+            m_head_ptr = nullptr; // the popped element was also the head
+        }
     }
 
     T pop_back_return()
@@ -117,6 +121,10 @@ public:
         T out = std::move(*p);
         std::destroy_at(p);
         --m_tail;
+        if (empty())
+        {
+            m_head_ptr = nullptr; // the popped element was also the head
+        }
         return out;
     }
 
@@ -194,5 +202,6 @@ private:
         m_tail = m_capacitty;
         m_capacitty = new_capacity;
         m_mask = new_capacity - 1;
+        m_head_ptr = nullptr; // pointed into the old, now freed buffer
     }
 };
