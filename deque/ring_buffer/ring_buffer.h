@@ -6,6 +6,8 @@
 #include <utility>
 #include <bit>
 #include <memory>
+#include <cstring>
+#include <type_traits>
 
 /*
 TODO:
@@ -24,6 +26,59 @@ class ring_buffer
 public:
     // & m_mask only works if capacity is a power of 2, so round up (0 becomes 1)
     explicit ring_buffer(size_t inital_capacity = 2) : m_capacitty(std::bit_ceil(inital_capacity)), m_data{m_alloc.allocate(m_capacitty)}, m_mask{m_capacitty - 1} {}
+
+    ring_buffer(const ring_buffer &source)
+    {
+        m_capacitty = source.m_capacitty;
+        m_mask = source.m_mask;
+        m_head{0};
+        m_tail{source.size()}
+
+        m_data = m_alloc.allocate(m_capacitty);
+        size_t h{m_head & m_mask};
+        size_t n{size()};
+        size_t first{std::min(n, m_capacitty - h)};
+        size_t second{n - first};
+
+        // The OS only maps RAM to a page on its first write. Touch every page now, front to back,
+        // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
+        // volatile stops the compiler deleting these writes, since nothing reads them.
+        auto *bytes = reinterpret_cast<volatile char *>(new_data);
+        for (size_t off = 0; off < new_capacity * sizeof(T); off += 4096)
+        {
+            bytes[off] = 0;
+        }
+
+        if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            std::memcpy(m_data, source.m_data + h, first * sizeof(T));
+            std::memcpy(m_data + first, source.m_data, second * sizeof(T));
+        }
+        else
+        {
+            std::uninitailized_copy(source.m_data + h, source.m_data + h + first, m_data);
+            std::uninitailized_copy(source.m_data, source.m_data + second, m_data + first);
+        }
+    }
+
+    ring_buffer& operator= (const ring_buffer & source){
+        
+    }
+
+    ~ring_buffer()
+    {
+        if constexpr (!std::is_trivially_destructible_v<T>)
+        {
+            for (size_t i{m_head}; i != m_tail; ++i)
+            {
+                std::destroy_at(m_data + (i & m_mask));
+            }
+        }
+
+        m_alloc.deallocate(m_data, m_capacitty);
+    }
+
+    // TODO: add deconstructor, copy assignment awnd copy constructor
 
     void push_front(const T &element) { emplace_front(element); }
     void push_front(T &&element) { emplace_front(std::move(element)); }
@@ -121,8 +176,6 @@ public:
         return m_data[(m_head + i) & m_mask];
     }
 
-    // TODO: add deconstructor, copy assignment awnd copy constructor
-
 private:
     std::allocator<T> m_alloc{};
     size_t m_capacitty;
@@ -135,10 +188,13 @@ private:
     size_t m_tail{0}; // index of after last element
 
     void grow() [[gnu::noinline]]
-    // TODO: std::memcpy
     {
-        size_t new_capacity = m_capacitty * m_resize_factor;
+        size_t new_capacity = m_capacitty * resize_factor;
         T *new_data = m_alloc.allocate(new_capacity);
+        size_t h{m_head & m_mask};
+        size_t n{size()};
+        size_t first{std::min(n, m_capacitty - h)};
+        size_t second{n - first};
 
         // The OS only maps RAM to a page on its first write. Touch every page now, front to back,
         // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
@@ -149,14 +205,19 @@ private:
             bytes[off] = 0;
         }
 
-        for (size_t i{0};
-             i < size();
-             ++i)
+        if constexpr (std::is_trivially_copyable_v<T>)
         {
-            T *src = m_data + ((m_head + i) & m_mask);
-            std::construct_at(new_data + i, std::move(*src));
-            std::destroy_at(src);
+            std::memcpy(new_data, m_data + h, first * sizeof(T));
+            std::memcpy(new_data + first, m_data, second * sizeof(T));
         }
+        else
+        {
+            std::uninitialized_move(m_data + h, m_data + h + first, new_data);
+            std::uninitialized_move(m_data, m_data + second, new_data + first);
+            std::destroy(m_data + h, m_data + h + first);
+            std::destroy(m_data, m_data + second);
+        }
+
         m_alloc.deallocate(m_data, m_capacitty);
 
         m_data = new_data;
