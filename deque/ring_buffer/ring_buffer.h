@@ -27,15 +27,16 @@ public:
     // & m_mask only works if capacity is a power of 2, so round up (0 becomes 1)
     explicit ring_buffer(size_t inital_capacity = 2) : m_capacitty(std::bit_ceil(inital_capacity)), m_data{m_alloc.allocate(m_capacitty)}, m_mask{m_capacitty - 1} {}
 
-    ring_buffer(const ring_buffer &source)
-    {
-        m_capacitty = source.m_capacitty;
-        m_mask = source.m_mask;
-        m_head{0};
-        m_tail{source.size()}
+    ring_buffer(const ring_buffer &source) :
 
+                                             m_capacitty{source.m_capacitty},
+                                             m_mask{source.m_mask},
+                                             m_head{0},
+
+                                             m_tail{source.size()},
+    {
         m_data = m_alloc.allocate(m_capacitty);
-        size_t h{m_head & m_mask};
+        size_t h{source.m_head & m_mask};
         size_t n{size()};
         size_t first{std::min(n, m_capacitty - h)};
         size_t second{n - first};
@@ -43,8 +44,8 @@ public:
         // The OS only maps RAM to a page on its first write. Touch every page now, front to back,
         // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
         // volatile stops the compiler deleting these writes, since nothing reads them.
-        auto *bytes = reinterpret_cast<volatile char *>(new_data);
-        for (size_t off = 0; off < new_capacity * sizeof(T); off += 4096)
+        auto *bytes = reinterpret_cast<volatile char *>(m_data);
+        for (size_t off = 0; off < m_data * sizeof(T); off += 4096)
         {
             bytes[off] = 0;
         }
@@ -56,13 +57,16 @@ public:
         }
         else
         {
-            std::uninitailized_copy(source.m_data + h, source.m_data + h + first, m_data);
-            std::uninitailized_copy(source.m_data, source.m_data + second, m_data + first);
+            std::uninitialized_copy(source.m_data + h, source.m_data + h + first, m_data);
+            std::uninitialized_copy(source.m_data, source.m_data + second, m_data + first);
         }
     }
 
-    ring_buffer& operator= (const ring_buffer & source){
-        
+    ring_buffer &operator=(const ring_buffer &source)
+    {
+        ring_buffer copy(source); // slightly unoptimal, if the buffer of this is large enough to be reused it should be
+        swap(copy);
+        return *this;
     }
 
     ~ring_buffer()
@@ -78,7 +82,14 @@ public:
         m_alloc.deallocate(m_data, m_capacitty);
     }
 
-    // TODO: add deconstructor, copy assignment awnd copy constructor
+    void swap(ring_buffer &other)
+    {
+        std::swap(m_capacitty, other.m_capacitty);
+        std::swap(m_data, other.m_data);
+        std::swap(m_mask, other.m_mask);
+        std::swap(m_head, other.m_head);
+        std::swap(m_tail, other.m_tail);
+    }
 
     void push_front(const T &element) { emplace_front(element); }
     void push_front(T &&element) { emplace_front(std::move(element)); }
