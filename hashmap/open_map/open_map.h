@@ -68,7 +68,7 @@ class open_map
 {
 public:
     // Undefined behaviour if capacity is not a power of 2 or less then 2
-    explicit open_map(size_t capacity = 2) : m_capacity{capacity}, m_grow_at{static_cast<size_t>(capacity * max_load_factor)}, m_slots(capacity), m_shift{static_cast<uint8_t>(64 - std::countr_zero(capacity))}
+    explicit open_map(size_t capacity = 2) : m_capacity{capacity}, m_grow_at{static_cast<size_t>(static_cast<float>(capacity) * max_load_factor)}, m_slots(capacity), m_shift{static_cast<uint8_t>(64 - std::countr_zero(capacity))}
     {
         assert(capacity >= 2 && (capacity & (capacity - 1)) == 0 && "capacity must be a power of 2");
     };
@@ -279,7 +279,7 @@ private:
         std::vector<slot<K, V>> old_slots = std::move(m_slots);
         m_slots = std::vector<slot<K, V>>(new_capacity);
         m_capacity = new_capacity;
-        m_grow_at = static_cast<size_t>(m_capacity * max_load_factor);
+        m_grow_at = static_cast<size_t>(static_cast<float>(m_capacity) * max_load_factor);
         m_shift = static_cast<uint8_t>(64 - std::countr_zero(m_capacity));
 
         for (auto &s : old_slots)

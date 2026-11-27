@@ -41,7 +41,7 @@ int random_value<int>(std::mt19937_64 &rng, int range)
 template <>
 std::uint64_t random_value<std::uint64_t>(std::mt19937_64 &rng, int range)
 {
-    return std::uniform_int_distribution<std::uint64_t>(0, range)(rng) * 0x100000001ull; // spread out over 64 bits
+    return std::uniform_int_distribution<std::uint64_t>(0, static_cast<std::uint64_t>(range))(rng) * 0x100000001ull; // spread out over 64 bits
 }
 
 template <>

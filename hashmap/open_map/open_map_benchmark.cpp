@@ -387,7 +387,7 @@ double median(std::vector<double> v)
 Ns medians_ns(const Samples &s)
 {
     Ns ns{};
-    for (int p = 0; p < NUM_PHASES; ++p)
+    for (std::size_t p = 0; p < NUM_PHASES; ++p)
         ns[p] = median(s.secs[p]) * 1e9 / static_cast<double>(N); // every phase is N ops per pass
     return ns;
 }
@@ -397,7 +397,7 @@ double geomean(const Ns &ns)
     double log_sum = 0;
     for (double x : ns)
         log_sum += std::log(x);
-    return std::exp(log_sum / NUM_PHASES);
+    return std::exp(log_sum / static_cast<double>(NUM_PHASES));
 }
 
 // Markdown table: one column per open_map, then unordered_map, then speedup (unordered_map / fastest open_map).
@@ -411,7 +411,7 @@ std::string make_table(const std::vector<std::string> &open_names, const std::ve
         md += "--:|";
     md += "\n";
 
-    for (int p = 0; p < NUM_PHASES; ++p)
+    for (std::size_t p = 0; p < NUM_PHASES; ++p)
     {
         std::size_t best = 0;
         for (std::size_t i = 1; i < open.size(); ++i)
@@ -508,7 +508,7 @@ Result bench(const char *key_name, std::size_t sweep_ops, std::size_t final_ops)
                                   medians_ns(fin_std), res.speedup);
 
     std::printf("  speedup:");
-    for (int p = 0; p < NUM_PHASES; ++p)
+    for (std::size_t p = 0; p < NUM_PHASES; ++p)
         std::printf("  %s %.2fx", phase_names[p], res.speedup[p]);
     std::printf("\n  %s done in %s%s\n", key_name, fmt_duration(total.elapsed()).c_str(),
                 res.ok ? "" : "   CORRECTNESS CHECK FAILED");
