@@ -6,6 +6,8 @@
 //
 // Ops (each on a fresh container, filled untimed when the op needs elements):
 //   push_back / push_front    empty -> N (includes every grow)
+//   push_back/front (rsv)     reserve(N), then empty -> N. reserve is inside the timed part.
+//                             std::deque has no reserve, so its rows are the plain pushes again.
 //   pop_back / pop_front      N -> empty
 //   index                     N reads at random indices
 //   front / back              N reads, alternating front and back
@@ -36,6 +38,8 @@ enum Op : std::uint8_t
 {
     PUSH_BACK,
     PUSH_FRONT,
+    PUSH_BACK_RSV,
+    PUSH_FRONT_RSV,
     POP_BACK,
     POP_FRONT,
     INDEX,
@@ -44,7 +48,7 @@ enum Op : std::uint8_t
     TAKE_FRONT,
     NUM_OPS
 };
-constexpr const char *op_names[NUM_OPS]{"push_back", "push_front", "pop_back", "pop_front", "index",
+constexpr const char *op_names[NUM_OPS]{"push_back", "push_front", "push_back (rsv)", "push_front (rsv)", "pop_back", "pop_front", "index",
                                         "front / back", "take_back", "take_front"};
 
 // "Read the element, then pop it". ring_buffer does both in one call, std::deque needs two.
@@ -66,6 +70,14 @@ T take_front(std::deque<T> &c)
     T x = std::move(c.front());
     c.pop_front();
     return x;
+}
+
+// reserve if the container has it (ring_buffer), otherwise nothing (std::deque)
+template <typename C>
+void reserve_if_possible(C &c, std::size_t n)
+{
+    if constexpr (requires { c.reserve(n); })
+        c.reserve(n);
 }
 
 // Tells the compiler x is used, so it can't skip the read or hoist it out of the loop.
@@ -138,6 +150,16 @@ void run_pass(const Data<T> &d, Times &t)
                                                { for (const T &v : d.values) c.push_front(v); }));
     }
     {
+        C c;
+        t[PUSH_BACK_RSV].push_back(time_ns_per_op([&]
+                                                  { reserve_if_possible(c, N); for (const T &v : d.values) c.push_back(v); }));
+    }
+    {
+        C c;
+        t[PUSH_FRONT_RSV].push_back(time_ns_per_op([&]
+                                                   { reserve_if_possible(c, N); for (const T &v : d.values) c.push_front(v); }));
+    }
+    {
         C c = filled<C>(d);
         // keep(c) stops the compiler merging N pops into one "size -= N"
         t[POP_BACK].push_back(time_ns_per_op([&]
@@ -188,7 +210,7 @@ void bench(const char *type_name)
         run_pass<std::deque<T>>(d, deque);
     }
 
-    std::printf("\r  %-14s %14s %14s %10s\n", "op (ns/op)", "ring_buffer", "std::deque", "speedup");
+    std::printf("\r  %-17s %14s %14s %10s\n", "op (ns/op)", "ring_buffer", "std::deque", "speedup");
     double r_sum = 0, q_sum = 0;
     for (int op = 0; op < NUM_OPS; ++op)
     {
@@ -196,10 +218,10 @@ void bench(const char *type_name)
         const double q = median(deque[op]);
         r_sum += r;
         q_sum += q;
-        std::printf("  %-14s %14.2f %14.2f %9.2fx\n", op_names[op], r, q, q / r);
+        std::printf("  %-17s %14.2f %14.2f %9.2fx\n", op_names[op], r, q, q / r);
     }
     const double r = r_sum / int{NUM_OPS}, q = q_sum / int{NUM_OPS};
-    std::printf("  %-14s %14.2f %14.2f %9.2fx\n", "mixed (avg)", r, q, q / r);
+    std::printf("  %-17s %14.2f %14.2f %9.2fx\n", "mixed (avg)", r, q, q / r);
 }
 
 int main()
