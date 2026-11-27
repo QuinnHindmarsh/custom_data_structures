@@ -42,15 +42,34 @@ public:
         }
         --m_head;
         std::construct_at(m_data + (m_head & m_mask), std::forward<Args>(args)...);
+        m_head_ptr = m_data[(m_head & m_mask)];
     }
 
     void pop_front()
     {
-        std::destroy_at(m_data + (m_head & m_mask));
+        if (m_head_ptr)
+        {
+            std::destroy_at(m_head_ptr);
+            m_head_ptr = nullptr;
+        }
+        else
+        {
+            std::destroy_at(m_data + (m_head & m_mask));
+        }
         ++m_head;
     }
     T pop_front_return()
     {
+
+        if (m_head_ptr)
+        {
+            T out = std::move(*m_head_ptr);
+            std::destroy_at(m_head_ptr);
+            m_head_ptr = nullptr;
+            ++m_head;
+            return out;
+        }
+
         T *p = m_data + (m_head & m_mask);
         T out = std::move(*p);
         std::destroy_at(p);
@@ -60,12 +79,16 @@ public:
 
     const T &front() const
     {
+        if (m_head_ptr)
+        {
+            return *m_head_ptr;
+        }
         return m_data[m_head & m_mask];
     };
 
     T &front()
     {
-        return m_data[m_head & m_mask];
+        return const_cast<T &>(std::as_const(*this).front());
     }
 
     void push_back(const T &element) { emplace_back(element); }
@@ -138,6 +161,8 @@ private:
     size_t m_mask;
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
+    T *m_head_ptr{nullptr};
+    T *m_tail_ptr{nullptr};
 
     void grow()
     {
