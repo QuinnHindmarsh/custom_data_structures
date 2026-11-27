@@ -140,17 +140,28 @@ O1vector::pop(): can't pop, the vector is empty
 
 #### Performance vs `std::vector`
 
-`T = int`, same machine as `open_map`. Averaged over 8 runs of the benchmark, each doing 50 runs × 2M ops.
+`T = int`, same machine as `open_map`, g++ 16.1.0. Averaged over 5 runs of the benchmark, each doing 50 runs × 2M ops.
 
-| Op | Mean ns (`O1vector` / `std::vector`) | Mean | Worst-5 avg (`O1vector` / `std::vector`) | Worst-5 |
+| Op | Mean ns ± noise (`O1vector` / `std::vector`) | Mean | Worst-5 avg (`O1vector` / `std::vector`) | Worst-5 |
 |:--|--:|:--|--:|:--|
-| push | 3.14 / 2.47 | 1.27x slower | 27.0 µs / 384.3 µs | **14.2x better** |
-| at | 2.21 / 2.44 | even (noise) | 34.9 µs / 30.2 µs | even (noise) |
-| set | 2.11 / 2.24 | even (noise) | 20.9 µs / 20.6 µs | even |
-| pop | 2.75 / 0.83 | 3.32x slower | 31.4 µs / 15.8 µs | 1.99x worse |
+| push | 2.11 ±0.05 / 1.61 ±0.04 | 1.31x slower | 16.8 µs / 261.2 µs | **15.5x better** |
+| at | 1.73 ±0.14 / 1.70 ±0.14 | even (noise) | 20.0 µs / 18.9 µs | even |
+| set | 1.46 ±0.11 / 1.38 ±0.09 | even (noise) | 14.7 µs / 14.5 µs | even |
+| pop | 1.76 ±0.04 / 0.44 ±0.003 | 4.0x slower | 20.4 µs / 9.6 µs | 2.13x worse |
 
-- **Push trades a bit of speed for no spikes.** `std::vector`'s worst pushes are full copies into a new array. Its per-op stddev is 748 ns, against 113 ns for `O1vector`. The push mean ratio stayed between 1.24x and 1.32x in all 8 runs.
-- **at and set match `std::vector`.** Both are one bounds check and one array access. `O1vector` came out slightly ahead on average, but the 95% ranges overlapped in almost every run.
+Spread of single ops, each timed on its own with `rdtsc`:
+
+| Op | Stddev ns (`O1vector` / `std::vector`) | Variance ns² (`O1vector` / `std::vector`) |
+|:--|--:|--:|
+| push | 54.1 / **507.8** | 2,926 / **257,876** |
+| at | 74.4 / 68.5 | 5,539 / 4,696 |
+| set | 46.0 / 52.8 | 2,113 / 2,783 |
+| pop | 54.9 / 22.5 | 3,018 / 507 |
+
+- **Noise** is the benchmark's 95% range on the mean, averaged over the 5 runs. If the two ranges overlap, the difference may be noise.
+- **Stddev** is the square root of the averaged variance.
+- **Push trades a bit of speed for no spikes.** `std::vector`'s worst pushes are full copies into a new array, which gives it about 9x the stddev and 88x the variance of `O1vector`. The push mean ratio stayed between 1.29x and 1.34x in all 5 runs.
+- **at and set match `std::vector`.** Both are one bounds check and one array access. The 95% ranges overlapped in every run. `O1vector` was ahead in 2 of 5 runs for `at` and 1 of 5 for `set`.
 - **Pop is slower because `O1vector` shrinks itself.** `std::vector::pop_back` only decrements the size and never gives memory back. `O1vector` runs its shrink check on every pop, and below 1/8 full it allocates a smaller array and copies 4 elements per pop into it. You pay for the memory being freed.
 
 Benchmark: [`O1_vec_benchmark.cpp`](<vector/O(1)_vector/O1_vec_benchmark.cpp>). Build with `-O2 -DNDEBUG`.
