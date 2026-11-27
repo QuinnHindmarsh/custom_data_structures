@@ -10,8 +10,7 @@
 //   index                     N reads at random indices
 //   front / back              N reads, alternating front and back
 //   take_back / take_front    read the end element (moved out), then pop it, N -> empty
-//   mixed                     N random ops, an equal share of each op above, on a container
-//                             pre-filled with N elements (it ends with ~0.75N, it never empties)
+//   mixed (avg)               not timed itself: the plain average of the ops above
 //
 // Build with optimisation, -O0 numbers are meaningless (or use the "C++23: build file (release)" task):
 //   g++ -std=c++23 -O2 -DNDEBUG ring_buffer_benchmark.cpp -o ring_buffer_benchmark
@@ -43,11 +42,10 @@ enum Op : std::uint8_t
     FRONT_BACK,
     TAKE_BACK,
     TAKE_FRONT,
-    MIXED, // not a real op: the mixed stream only uses the ops above
     NUM_OPS
 };
 constexpr const char *op_names[NUM_OPS]{"push_back", "push_front", "pop_back", "pop_front", "index",
-                                        "front / back", "take_back", "take_front", "mixed"};
+                                        "front / back", "take_back", "take_front"};
 
 // "Read the element, then pop it". ring_buffer does both in one call, std::deque needs two.
 template <typename T>
@@ -74,7 +72,7 @@ T take_front(std::deque<T> &c)
 template <typename X>
 inline void keep(const X &x) { asm volatile("" : : "r,m"(x) : "memory"); }
 
-// ---------- data: the same values, indices and mixed ops are fed to both containers ----------
+// ---------- data: the same values and indices are fed to both containers ----------
 
 template <typename T>
 T random_value();
@@ -85,18 +83,11 @@ std::int64_t random_value<std::int64_t>() { return random::i64(); }
 template <>
 std::string random_value<std::string>() { return random::string(24); }
 
-struct Step
-{
-    Op op;
-    std::size_t i; // INDEX: element index. FRONT_BACK: 0 = front, 1 = back. push: which value.
-};
-
 template <typename T>
 struct Data
 {
     std::vector<T> values;          // N random values, pushed in order
     std::vector<std::size_t> index; // N random indices in [0, N)
-    std::vector<Step> mixed;        // N ops
 };
 
 template <typename T>
@@ -107,35 +98,6 @@ Data<T> make_data()
     {
         d.values.push_back(random_value<T>());
         d.index.push_back(random::range<std::size_t>(0, N - 1));
-    }
-
-    // equal share of each op, in random order
-    for (std::size_t i = 0; i < N; ++i)
-        d.mixed.push_back({static_cast<Op>(i % MIXED), 0});
-    std::shuffle(d.mixed.begin(), d.mixed.end(), random::mt64);
-
-    // track the size so every INDEX is in range
-    std::size_t size = N;
-    for (std::size_t i = 0; i < N; ++i)
-    {
-        Step &s = d.mixed[i];
-        switch (s.op)
-        {
-        case PUSH_BACK:
-        case PUSH_FRONT:
-            s.i = i;
-            ++size;
-            break;
-        case INDEX:
-            s.i = random::range<std::size_t>(0, size - 1);
-            break;
-        case FRONT_BACK:
-            s.i = i % 2;
-            break;
-        default: // every pop
-            --size;
-            break;
-        }
     }
     return d;
 }
@@ -203,26 +165,6 @@ void run_pass(const Data<T> &d, Times &t)
         t[TAKE_FRONT].push_back(time_ns_per_op([&]
                                                { for (std::size_t i = 0; i < N; ++i) keep(take_front(c)); }));
     }
-    {
-        C c = filled<C>(d);
-        t[MIXED].push_back(time_ns_per_op([&]
-                                          {
-            for (const Step &s : d.mixed)
-            {
-                switch (s.op)
-                {
-                case PUSH_BACK:  c.push_back(d.values[s.i]); break;
-                case PUSH_FRONT: c.push_front(d.values[s.i]); break;
-                case POP_BACK:   c.pop_back(); break;
-                case POP_FRONT:  c.pop_front(); break;
-                case INDEX:      keep(c[s.i]); break;
-                case FRONT_BACK: keep(s.i == 0 ? c.front() : c.back()); break;
-                case TAKE_BACK:  keep(take_back(c)); break;
-                case TAKE_FRONT: keep(take_front(c)); break;
-                default: break;
-                }
-            } }));
-    }
 }
 
 double median(std::vector<double> v)
@@ -247,12 +189,17 @@ void bench(const char *type_name)
     }
 
     std::printf("\r  %-14s %14s %14s %10s\n", "op (ns/op)", "ring_buffer", "std::deque", "speedup");
+    double r_sum = 0, q_sum = 0;
     for (int op = 0; op < NUM_OPS; ++op)
     {
         const double r = median(ring[op]);
         const double q = median(deque[op]);
+        r_sum += r;
+        q_sum += q;
         std::printf("  %-14s %14.2f %14.2f %9.2fx\n", op_names[op], r, q, q / r);
     }
+    const double r = r_sum / int{NUM_OPS}, q = q_sum / int{NUM_OPS};
+    std::printf("  %-14s %14.2f %14.2f %9.2fx\n", "mixed (avg)", r, q, q / r);
 }
 
 int main()
