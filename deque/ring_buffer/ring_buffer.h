@@ -33,7 +33,7 @@ public:
                                              m_mask{source.m_mask},
                                              m_head{0},
 
-                                             m_tail{source.size()},
+                                             m_tail{source.size()}
     {
         m_data = m_alloc.allocate(m_capacitty);
         size_t h{source.m_head & m_mask};
@@ -45,7 +45,7 @@ public:
         // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
         // volatile stops the compiler deleting these writes, since nothing reads them.
         auto *bytes = reinterpret_cast<volatile char *>(m_data);
-        for (size_t off = 0; off < m_data * sizeof(T); off += 4096)
+        for (size_t off = 0; off < m_capacitty * sizeof(T); off += 4096)
         {
             bytes[off] = 0;
         }
@@ -198,7 +198,7 @@ private:
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
 
-    void grow() [[gnu::noinline]]
+    [[gnu::noinline]] void grow()
     {
         size_t new_capacity = m_capacitty * resize_factor;
         T *new_data = m_alloc.allocate(new_capacity);
