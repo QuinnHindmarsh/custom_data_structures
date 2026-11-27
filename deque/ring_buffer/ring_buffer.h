@@ -99,7 +99,7 @@ public:
     {
         if (size() == m_capacitty) [[unlikely]]
         {
-            grow();
+            grow(m_capacitty * resize_factor);
         }
         --m_head;
         std::construct_at(m_data + (m_head & m_mask), std::forward<Args>(args)...);
@@ -137,7 +137,7 @@ public:
     {
         if (size() == m_capacitty) [[unlikely]]
         {
-            grow();
+            grow(m_capacitty * resize_factor);
         }
         std::construct_at(m_data + (m_tail & m_mask), std::forward<Args>(args)...);
 
@@ -187,6 +187,11 @@ public:
         return m_data[(m_head + i) & m_mask];
     }
 
+    void reserve(size_t n)
+    {
+        grow(std::bit_ceil(inital_capacity));
+    }
+
 private:
     std::allocator<T> m_alloc{};
     size_t m_capacitty;
@@ -198,10 +203,9 @@ private:
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
 
-    [[gnu::noinline]] void grow()
+    [[gnu::noinline]] void grow(size_t new_capacity)
     {
-        size_t new_capacity = m_capacitty * resize_factor;
-        T *new_data = m_alloc.allocate(new_capacity);
+        m_capacitty *resize_factor T *new_data = m_alloc.allocate(new_capacity);
         size_t h{m_head & m_mask};
         size_t n{size()};
         size_t first{std::min(n, m_capacitty - h)};
