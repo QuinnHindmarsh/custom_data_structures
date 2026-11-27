@@ -5,150 +5,181 @@
 #include <algorithm>
 #include <utility>
 #include <bit>
+#include <memory>
 
 /*
 TODO:
 
-fixes
-- overright on pops
 
 optimisations
-- manage my own memory? why am I using std::vector?
-    - std::allocator, std::construct at. also removes default initilisation requirement
-- thread to allocate in advanced when it is nearing capacity
-- thread to then clean up the whole vec
+- thread to allocate in advanced when it is nearing capacity?
+- thread to then dealloc after?
 - head/tail node cached
-- remove capacity
 - take in T as a const ref then construct directly?
 
 expansions
-- .emplace
 - itterators
+- .at
 */
 
-template <std::default_initializable T>
+template <std::move_constructible T>
 class ring_buffer
 {
+    /* Out of bounds actions are purposefully undefined behaviour, to match std::deque*/
 public:
     // & m_mask only works if capacity is a power of 2, so round up (0 becomes 1)
-    explicit ring_buffer(size_t inital_capacity = 2) : m_buf(std::bit_ceil(inital_capacity)), m_capacitty{m_buf.size()}, m_mask{m_buf.size() - 1} {};
+    explicit ring_buffer(size_t inital_capacity = 2) : m_capacitty(std::bit_ceil(inital_capacity)), m_data{m_alloc.allocate(m_capacitty)}, m_mask{m_capacitty - 1} {}
 
     void push_front(T element)
     {
-        if (size() == m_capacitty)
+        if (m_size == m_capacitty)
         {
             grow();
         }
         // if head = 0, this wraps around
         // ((size_t) 0 - 1) = max_size_t
+        // construct first, so a throwing move leaves the buffer unchanged
         --m_head;
-        m_buf[m_head & m_mask] = std::move(element);
+        std::construct_at(m_data + (m_head & m_mask), std::move(element));
+    }
+    template <typename... Args>
+    void emplace_front(Args &&...args)
+    {
+        if (m_size == m_capacitty)
+        {
+            grow();
+        }
+        --m_head;
+        std::construct_at(m_data + (m_head & m_mask), std::forward<Args>(args)...);
     }
 
     void pop_front()
     {
+        std::destroy_at(m_data + (m_head & m_mask));
         ++m_head;
     }
 
     T pop_front_return()
     {
-
-        return std::move(m_buf[(m_head++) & m_mask]);
-        ;
+        T *p = m_data + (m_head & m_mask);
+        T out = std::move(*p);
+        std::destroy_at(p);
+        ++m_head;
+        return out;
     }
 
     const T &front() const
     {
-
-        return m_buf[m_head & m_mask];
+        return m_data[m_head & m_mask];
     }
 
     T &front()
     {
-
-        return m_buf[m_head & m_mask];
+        return m_data[m_head & m_mask];
     }
-
 
     void push_back(T element)
     {
-        if (size() == m_capacitty)
+        if (m_size == m_capacitty)
         {
             grow();
         }
-        m_buf[m_tail & m_mask] = std::move(element);
+        // m_data is raw memory, so construct (not assign) into it
+        std::construct_at(m_data + (m_tail & m_mask), std::move(element));
         ++m_tail;
     }
+    template <typename... Args>
+    void emplace_back(Args &&...args)
+    {
+        if (m_size == m_capacitty)
+        {
+            grow();
+        }
+        std::construct_at(m_data + (m_tail & m_mask), std::forward<Args>(args)...);
 
+        ++m_tail;
+        ++m_size;
+    }
     void pop_back()
     {
         --m_tail;
+        std::destroy_at(m_data + (m_tail & m_mask));
+        --m_size;
     }
 
     T pop_back_return()
     {
-
-        return std::move(m_buf[--m_tail & m_mask]);
+        T *p = m_data + ((m_tail - 1) & m_mask);
+        T out = std::move(*p);
+        std::destroy_at(p);
+        --m_tail;
+        --m_size;
+        return out;
     }
 
     const T &back() const
     {
-
-        return m_buf[(m_tail - 1) & m_mask];
+        return m_data[(m_tail - 1) & m_mask];
     }
 
     T &back()
     {
-        return m_buf[(m_tail - 1) & m_mask];
+        return m_data[(m_tail - 1) & m_mask];
     }
 
     size_t size() const
     {
-        return m_tail - m_head;
+        return m_size;
     }
 
     bool empty() const
     {
-        return (m_tail - m_head == 0);
+        return m_size == 0;
     }
 
     T &operator[](std::size_t i)
     {
-        return m_buf[(m_head + i) & m_mask];
+        return m_data[(m_head + i) & m_mask];
     }
     const T &operator[](std::size_t i) const
     {
-        return m_buf[(m_head + i) & m_mask];
+        return m_data[(m_head + i) & m_mask];
     }
 
+    // TODO: add deconstructor, copy assignment awnd copy constructor
+
 private:
+    std::allocator<T> m_alloc{};
+    size_t m_capacitty;
+
     size_t m_resize_factor{2}; // resize factor being a power of 2, allows for & instead of %
 
-    std::vector<T> m_buf;
-    size_t m_capacitty;
+    T *m_data;
     size_t m_mask;
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
+    size_t m_size{0};
 
     void grow()
     {
-        std::size_t n = size();
-        std::vector<T> new_buf(n * m_resize_factor);
+        size_t new_capacity = m_capacitty * m_resize_factor;
+        T *new_data = m_alloc.allocate(new_capacity);
 
-        size_t h{m_head & m_mask};
-        size_t first_length{std::min(n, m_capacitty - h)};
+        for (size_t i{0};
+             i < m_size;
+             ++i)
+        {
+            T *src = m_data + ((m_head + i) & m_mask);
+            std::construct_at(new_data + i, std::move(*src));
+            std::destroy_at(src);
+        }
+        m_alloc.deallocate(m_data, m_capacitty);
 
-        T *src = m_buf.data();
-        T *dest = new_buf.data();
-        std::move(src + h, src + h + first_length, dest);              // head to end
-        std::move(src, src + (n - first_length), dest + first_length); // end to tail
+        m_data = new_data;
 
-        m_buf = std::move(new_buf);
-        m_mask = m_buf.size() - 1;
-        m_capacitty *= m_resize_factor;
-
-        // elements now start at index 0 of the new buffer
         m_head = 0;
-        m_tail = n;
+        m_tail = m_capacitty;
+        m_capacitty = new_capacity;
+        m_mask = new_capacity - 1;
     }
 };
