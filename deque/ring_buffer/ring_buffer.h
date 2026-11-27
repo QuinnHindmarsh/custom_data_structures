@@ -30,18 +30,9 @@ public:
     // & m_mask only works if capacity is a power of 2, so round up (0 becomes 1)
     explicit ring_buffer(size_t inital_capacity = 2) : m_capacitty(std::bit_ceil(inital_capacity)), m_data{m_alloc.allocate(m_capacitty)}, m_mask{m_capacitty - 1} {}
 
-    void push_front(T element)
-    {
-        if (size() == m_capacitty)
-        {
-            grow();
-        }
-        // if head = 0, this wraps around
-        // ((size_t) 0 - 1) = max_size_t
-        // construct first, so a throwing move leaves the buffer unchanged
-        --m_head;
-        std::construct_at(m_data + (m_head & m_mask), std::move(element));
-    }
+    void push_front(const T &element) { emplace_front(element); }
+    void push_front(T &&element) { emplace_front(std::move(element)); }
+
     template <typename... Args>
     void emplace_front(Args &&...args)
     {
@@ -152,6 +143,15 @@ private:
     {
         size_t new_capacity = m_capacitty * m_resize_factor;
         T *new_data = m_alloc.allocate(new_capacity);
+
+        // The OS only maps RAM to a page on its first write. Touch every page now, front to back,
+        // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
+        // volatile stops the compiler deleting these writes, since nothing reads them.
+        auto *bytes = reinterpret_cast<volatile char *>(new_data);
+        for (size_t off = 0; off < new_capacity * sizeof(T); off += 4096)
+        {
+            bytes[off] = 0;
+        }
 
         for (size_t i{0};
              i < size();
