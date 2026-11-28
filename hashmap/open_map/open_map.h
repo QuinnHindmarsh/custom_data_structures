@@ -8,12 +8,27 @@
 #include <concepts>
 #include <type_traits>
 
+// REVIEW KEY: every comment from this review starts with TODO(review, <tag>). Tags, most severe first: bug =
+//     wrong behaviour today, safety = UB / exception-safety hole, latency = hot-path stall, perf = throughput
+//     or memory, api = interface design, style = naming / readability. A NOTE(review) is something done well
+//     that a reviewer would call out.
 template <typename K, typename Hash, typename Eq>
 concept HashableWith = requires(const K &a, const K &b, const Hash &h, const Eq &eq) {
     { h(a) } -> std::convertible_to<std::size_t>;
     { eq(a, b) } -> std::convertible_to<bool>;
 };
 
+// TODO(review, perf): `K key{}; V value{};` means every EMPTY slot holds a live, default-constructed K and V.
+//     That forces both to be default-constructible, runs a constructor per slot on every rehash (a 2^20 table
+//     of std::string runs 2^20 ctors), and erase() never ends an object's lifetime (see erase). Use raw
+//     storage (`alignas(K) std::byte key_buf[sizeof(K)]` or a union) and std::construct_at / std::destroy_at
+//     driven by DIB, exactly like ring_buffer already does.
+//
+// TODO(review, perf): sizeof(slot<std::string, int>) is 56, so roughly one slot per 64-byte cache line and
+//     every probe step is a likely cache miss. Your storage-refactor idea below is the right direction. It is
+//     essentially what absl::flat_hash_map and boost::unordered_flat_map do: a separate dense array of 1-byte
+//     control words (DIB or a few hash bits) that you probe, often 16 at a time with SIMD, and only touch the
+//     key/value array on a likely match. Benchmark against both, an interviewer will ask how you compare.
 // primary template: non-integral keys are assumed large/expensive to hash and compare,
 // so the full hash is stored and compared before calling eq, and reused on rehash
 template <typename K, typename V>
@@ -60,11 +75,38 @@ struct mp{
 I am mainly checking DIB and key when itterating, this would allow more keys and DIBs to exist in one cache line. Then when the matching key is found it requires one additonal memory jump
 
 */
+// TODO(review, api): template parameter naming is inconsistent: `hash`/`eq` are lowercase (and `hash` is also
+//     a member name of slot), while K/V are uppercase. Use Hash / KeyEqual like the standard. `const int
+//     resize_factor` should be `std::size_t ResizeFactor`: it multiplies a size_t, and an int invites
+//     sign-conversion warnings under -Wconversion.
+//
+// TODO(review, api): missing basics a reviewer will expect: empty(), clear(), contains(k), capacity(),
+//     load_factor(), and above all reserve(n). In trading code you size every container at startup so nothing
+//     rehashes on the hot path; without reserve the only way is to guess a power of 2 for the ctor.
+//
+// TODO(review, api): no constructor takes a Hash or Eq instance, so a stateful hasher (e.g. a seeded hash to
+//     resist adversarial keys) can't be used. Accept them as ctor arguments and store them with
+//     [[no_unique_address]] so empty functors cost 0 bytes.
+//
+// TODO(review, api): find() returns a V* that is invalidated by ANY later insert (robin hood swaps move
+//     elements) or erase (backward shift), not only by a rehash. std::unordered_map guarantees reference
+//     stability, so code ported from it will silently break. State the invalidation rules at the top of the
+//     class.
+//
+// TODO(review, bug): the implicitly generated move ctor / move assignment leave the source with an empty
+//     m_slots but the old m_capacity, m_shift and m_size. Any use of the moved-from map then reads out of
+//     bounds. Confirmed under ASan: `auto b = std::move(a); a.find(1);` segfaults in insertion_idx. A
+//     moved-from object must stay valid (contents unspecified, but usable). Write both move ops by hand,
+//     reset the source to a valid empty table, and mark them noexcept.
 template <typename K, typename V, typename hash = std::hash<K>, typename eq = std::equal_to<K>, const int resize_factor = 2, const float max_load_factor = 0.75f>
     requires HashableWith<K, hash, eq>
 class open_map
 {
 public:
+    // TODO(review, safety): the power-of-2 precondition is only an assert, so a release build with capacity 3
+    //     silently gives wrong indices, and capacity 1 makes m_shift 64, and `x >> 64` is UB. Round up with
+    //     std::bit_ceil (as ring_buffer does) or throw. Rounding up is friendlier: callers usually mean at
+    //     least n.
     // Undefined behaviour if capacity is not a power of 2 or less then 2
     explicit open_map(size_t capacity = 2) : m_capacity{capacity}, m_grow_at{static_cast<size_t>(static_cast<float>(capacity) * max_load_factor)}, m_slots(capacity), m_shift{static_cast<uint8_t>(64 - std::countr_zero(capacity))}
     {
@@ -74,11 +116,23 @@ public:
     // forwarding references: nothing is copied up front.
     //   update -> key is only read (never copied), value is copied/moved into the existing slot
     //   insert -> key and value are copied (lvalue) or moved (rvalue) straight into the new slot
+    // TODO(review, api): this is std's insert_or_assign, not insert. std::unordered_map::insert does NOT
+    //     overwrite an existing value, so `m.insert(k, v)` will be misread in review. Rename it, and return
+    //     something (a bool for inserted vs updated, or a pointer to the stored value) so callers don't need
+    //     a second find() after inserting.
+    //
+    // TODO(review, api): add try_emplace(key, args...) that only constructs V when the key is missing. Today
+    //     an expensive V must be fully built by the caller even when the key already exists and the value is
+    //     just assigned.
     template <typename KArg, typename VArg>
         requires std::constructible_from<K, KArg> && std::constructible_from<V, VArg> && std::assignable_from<V &, VArg>
 
     void insert(KArg &&key, VArg &&value)
     {
+        // TODO(review, perf): this builds a K for every heterogeneous call, so `insert("some long key", 1)`
+        //     on a std::string map heap-allocates even when the key already exists. Support transparent
+        //     Hash/Eq (an `is_transparent` member, as in C++20 heterogeneous lookup) so the probe runs on the
+        //     string_view and a K is only built when a new slot is actually created.
         if constexpr (!std::same_as<std::remove_cvref_t<KArg>, K>)
         {
             // different type, e.g. const char* for a std::string key. Build the K once here,
@@ -95,7 +149,13 @@ public:
                 return;
             }
 
+            // NOTE(review): good: building the slot before the rehash is the right fix for the aliasing
+            //     use-after-free from the last review. std::vector::push_back(v[0]) has the same problem and
+            //     libstdc++ solves it the same way.
             slot_t s = make_slot(std::forward<KArg>(key), std::forward<VArg>(value), h, 1);
+            // TODO(review, style): stale comment: the code below checks `probe_distance > max_dib`, not `==
+            //     0`. The doc comment on insertion_idx has the same stale claim. Wrong comments cost more
+            //     review time than missing ones.
             // probe_distance == 0 means the key would need a DIB > max_dib at existing_idx
             if (m_size + 1 > m_grow_at || probe_distance > max_dib)
             {
@@ -112,6 +172,12 @@ public:
         }
     }
 
+    // TODO(review, perf): same heterogeneous lookup point as insert. With a std::string key, `m.find(sv)` for
+    //     a std::string_view must build a std::string first, which allocates for keys over 15 chars. An
+    //     allocation inside a lookup is the first thing a latency reviewer looks for.
+    //
+    // TODO(review, api): mark find(), size() and similar accessors [[nodiscard]]. Ignoring find's result is
+    //     always a bug, and the compiler can tell you.
     V *find(const K &key) // return nullptr if not found
     {
         return const_cast<V *>(std::as_const(*this).find(key));
@@ -128,6 +194,13 @@ public:
         return nullptr;
     }
 
+    // TODO(review, perf): a miss probes three times (find, then insert probes again, then find again) and
+    //     builds a temporary V{} that insert then moves. Do one probe: call insertion_idx once, return the
+    //     matched slot on a hit, otherwise construct V in place at the insert position. Have insert_no_check
+    //     return the index where the original element finally landed so you can return a reference to it.
+    //
+    // TODO(review, api): only takes const K&, so `m[std::move(key)]` copies the key. Add a K&& overload, like
+    //     std.
     // like std::unordered_map: inserts a default constructed V if key is missing.
     V &operator[](const K &key)
         requires std::default_initializable<V>
@@ -139,6 +212,12 @@ public:
         return *find(key); // insert can swap/rehash, so look the slot up again
     }
 
+    // TODO(review, api): return bool (or size_t like std::unordered_map::erase) so the caller knows whether
+    //     anything was removed. Mark it [[nodiscard]] only if you return bool, since std callers often ignore
+    //     the count.
+    //
+    // TODO(review, style): the first loop below re-implements insertion_idx. Reuse it so there is exactly one
+    //     probe loop to optimise, test and keep correct.
     void erase(const K &key)
     {
         const uint64_t h = m_hash(key);
@@ -159,6 +238,12 @@ public:
             ++probe_distance;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
         }
+        // TODO(review, perf): erase never destroys the erased key/value. If the next slot has DIB <= 1, the
+        //     loop below doesn't run and the erased slot is just marked DIB = 0 with its K and V still fully
+        //     alive (an erased 1 MB std::string stays allocated until the next rehash or ~open_map). When the
+        //     loop does run, the last slot keeps a moved-from object, which is fine for std types but not for
+        //     a type whose move is a copy. A container should end the lifetime of what it erases: with raw
+        //     storage this becomes std::destroy_at(&slot.key) etc.
         size_t last_idx{idx};
         idx = (idx + 1) & (m_capacity - 1);
 
@@ -174,6 +259,8 @@ public:
         --m_size;
     }
 
+    // TODO(review, api): not const, so it can't be called on a `const open_map&`. Should be `[[nodiscard]]
+    //     size_t size() const noexcept`. Same noexcept point for empty() once it exists.
     size_t size()
     {
         return m_size;
@@ -182,9 +269,15 @@ public:
 private:
     static_assert(resize_factor > 1 && (resize_factor & (resize_factor - 1)) == 0 && "resize factor must be > 1, and a power of 2 as hash & (cap -1) is used over %");
     static_assert(max_load_factor > 0.0f && max_load_factor < 1.0f && "max load factor must be between 0 and 1");
+    // TODO(review, perf): m_capacity duplicates m_slots.size(), and every probe computes `& (m_capacity -
+    //     1)`. Store m_mask instead (ring_buffer already does). Group the members the lookup path reads
+    //     (m_slots data pointer, m_shift, m_mask) together at the top. sizeof(open_map<int, int>) is 56
+    //     today; it can be 32 with [[no_unique_address]] on the functors and dropping redundant fields.
     size_t m_capacity{};
     size_t m_size{0};
     size_t m_grow_at;
+    // TODO(review, style): npos is never used. Remove dead code before review so reviewers don't hunt for its
+    //     purpose.
     static constexpr std::size_t npos{static_cast<std::size_t>(-1)}; // max_size_t - used as a sentinal value
     static constexpr uint8_t max_dib{100};                           // longest allowed probe distance, exceeding it triggers a rehash
     std::vector<slot<K, V>> m_slots{};
@@ -201,6 +294,10 @@ private:
     size_t index_from_hash(uint64_t hash_value) const
     {
         // Fibonachi hashing
+        // TODO(review, style): the trailing comment is wrong: taking the top bits of hash * 2^64/phi is not
+        //     equivalent to hash % m_capacity, it is a different (better mixed) mapping. That mixing is the
+        //     whole point of Fibonacci hashing: it rescues identity hashes like std::hash<int> from
+        //     clustering on keys that share low bits. Say that instead.
         return static_cast<size_t>((hash_value * 0x9E3779B97F4A7C15ull) >> m_shift); // returns top log2(m_capacity) bits of the hash value, which is equivalent to hash_value % m_capacity when m_capacity is a power of 2
     }
 
@@ -274,6 +371,17 @@ private:
         }
     }
 
+    // TODO(review, safety): not exception safe. m_slots is moved out BEFORE the new vector is allocated, so
+    //     if `std::vector(new_capacity)` throws bad_alloc (or a K/V default ctor throws), the map is left
+    //     with empty m_slots but the old m_size and m_capacity, and the next find reads out of bounds. Build
+    //     the new vector into a local first, then swap it in. Moves inside the loop also need K and V to be
+    //     nothrow-move-constructible: static_assert that, or copy when the move may throw
+    //     (std::move_if_noexcept).
+    //
+    // TODO(review, latency): a rehash runs inside insert(), on whoever's hot path triggered it. For a 1M-slot
+    //     table that is milliseconds of allocation, page faults and moves in one call, which is the latency
+    //     spike trading reviewers care about most. Mitigations, cheapest first: reserve() at startup, then an
+    //     incremental rehash that moves a few slots per operation (the trick you already use in O1vector).
     void rehash(size_t new_capacity)
     {
         assert((new_capacity & (new_capacity - 1)) == 0 && "new capacity must be a power of 2");
@@ -315,6 +423,7 @@ private:
             ++probe_distance;
             idx = (idx + 1) & (m_capacity - 1); // linear probing, wrap around using bitwise AND since capacity is a power of 2
         }
+        // TODO(review, style): unreachable after `while (true)`. Delete it.
         return {idx, probe_distance};
     }
 };
