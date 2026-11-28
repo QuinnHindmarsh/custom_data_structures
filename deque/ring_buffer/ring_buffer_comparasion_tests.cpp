@@ -306,7 +306,7 @@ void test_string(int N, int M)
 // Every starting capacity, including 0 and non powers of 2, gives an empty buffer that works
 void test_constructor()
 {
-    for (size_t cap : {0, 1, 2, 3, 7, 8, 9, 1000})
+    for (size_t cap : {0uz, 1uz, 2uz, 3uz, 7uz, 8uz, 9uz, 1000uz})
     {
         ring_buffer<int32_t> rb(cap);
         if (!rb.empty() || rb.size() != 0)
@@ -328,6 +328,45 @@ void test_constructor()
     s.push_back("a long string that does not fit in SSO");
     if (s.size() != 1 || s.front() != "a long string that does not fit in SSO")
         fail("default constructor - wrong contents after push");
+}
+
+// {a, b, c} holds exactly those elements, in order, and still works after more pushes
+void test_initializer_list()
+{
+    ring_buffer<int32_t> rb{10, 20, 30};
+    if (rb.size() != 3 || rb[0] != 10 || rb[1] != 20 || rb[2] != 30)
+        fail(std::format("initializer_list - int, expected size 3 got {}", rb.size()));
+    rb.push_front(5);
+    rb.push_back(40); // grows past the starting capacity of 4
+    if (rb.size() != 5 || rb.front() != 5 || rb.back() != 40 || rb[1] != 10)
+        fail("initializer_list - int, wrong contents after pushes");
+
+    // braces mean "these elements", brackets mean "this capacity"
+    ring_buffer<int32_t> one{5};
+    ring_buffer<int32_t> cap(5);
+    if (one.size() != 1 || one.front() != 5)
+        fail("initializer_list - {5} should hold one element");
+    if (!cap.empty())
+        fail("initializer_list - (5) should be empty");
+
+    ring_buffer<int32_t> none{std::initializer_list<int32_t>{}};
+    if (!none.empty())
+        fail("initializer_list - empty list should be empty");
+
+    // non trivial type: memory starts uninitialised, so elements must be constructed, not assigned
+    std::string big(40, 'x'); // too long for SSO, so a bad copy is likely to crash
+    ring_buffer<std::string> s{big, "b", big};
+    if (s.size() != 3 || s[0] != big || s[1] != "b" || s[2] != big)
+        fail("initializer_list - string, wrong contents");
+
+    // each element constructed once and destroyed once
+    {
+        ring_buffer<Tracked> t{Tracked{1}, Tracked{2}, Tracked{3}};
+        if (Tracked::live != 3)
+            fail(std::format("initializer_list - expected 3 live Tracked, got {}", Tracked::live));
+    }
+    if (Tracked::live != 0)
+        fail(std::format("initializer_list - left {} live Tracked", Tracked::live));
 }
 
 // Every element must be destroyed exactly once: not leaked, not destroyed twice
@@ -367,6 +406,8 @@ int main()
 {
     test_constructor();
     std::cout << "test_constructor passed\n";
+    test_initializer_list();
+    std::cout << "test_initializer_list passed\n";
     test_destructor(1'000, 100);
     std::cout << "test_destructor passed\n";
     test_int32(10'000, 100);
