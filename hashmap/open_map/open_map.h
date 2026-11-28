@@ -8,18 +8,15 @@
 #include <concepts>
 #include <type_traits>
 
-template <typename T>
-concept Hashable = requires(T a, T b) {
-    { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
-    { a == b } -> std::convertible_to<bool>;
+template <typename K, typename Hash, typename Eq>
+concept HashableWith = requires(const K &a, const K &b, const Hash &h, const Eq &eq) {
+    { h(a) } -> std::convertible_to<std::size_t>;
+    { eq(a, b) } -> std::convertible_to<bool>;
 };
-
-template <typename T>
-concept IntegralKey = Hashable<T> && std::integral<T>;
 
 // primary template: non-integral keys are assumed large/expensive to hash and compare,
 // so the full hash is stored and compared before calling eq, and reused on rehash
-template <Hashable K, typename V>
+template <typename K, typename V>
 struct slot
 {
     K key{};
@@ -29,7 +26,7 @@ struct slot
 };
 
 // integral keys are cheap to hash and compare - don't waste space storing the hash
-template <IntegralKey K, typename V>
+template <std::integral K, typename V>
 struct slot<K, V>
 {
     K key{};
@@ -63,7 +60,8 @@ struct mp{
 I am mainly checking DIB and key when itterating, this would allow more keys and DIBs to exist in one cache line. Then when the matching key is found it requires one additonal memory jump
 
 */
-template <Hashable K, typename V, typename hash = std::hash<K>, typename eq = std::equal_to<K>, const int resize_factor = 2, const float max_load_factor = 0.75f>
+template <typename K, typename V, typename hash = std::hash<K>, typename eq = std::equal_to<K>, const int resize_factor = 2, const float max_load_factor = 0.75f>
+    requires HashableWith<K, hash, eq>
 class open_map
 {
 public:
@@ -108,7 +106,8 @@ public:
                 return;
             }
 
-            insert_no_check(make_slot(std::move(s), existing_idx);
+            s.DIB = probe_distance; // insert_no_check needs the DIB to match idx
+            insert_no_check(std::move(s), existing_idx);
             ++m_size;
         }
     }
