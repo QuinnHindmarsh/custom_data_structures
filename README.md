@@ -19,18 +19,47 @@ g++ -std=c++23 -g -O1 deque/ring_buffer/ring_buffer_comparasion_tests.cpp -o deq
 ./deque/ring_buffer/ring_buffer_comparasion_tests.exe
 ```
 
-Benchmarks, built with `-O2 -DNDEBUG` (unoptimised timings are meaningless):
+Benchmarks use [Google Benchmark](https://github.com/google/benchmark). Install it once. In an MSYS2 shell (UCRT64 or MINGW64, whichever your g++ comes from):
 
 ```sh
-g++ -std=c++23 -O2 -DNDEBUG hashmap/open_map/open_map_benchmark.cpp -o hashmap/open_map/open_map_benchmark.exe
-./hashmap/open_map/open_map_benchmark.exe hashmap/open_map/open_map_benchmark_results.md   # writes its results to this file
-
-g++ -std=c++23 -O2 -DNDEBUG "vector/O(1)_vector/O1_vec_benchmark.cpp" -o "vector/O(1)_vector/O1_vec_benchmark.exe"
-"./vector/O(1)_vector/O1_vec_benchmark.exe"
-
-g++ -std=c++23 -O2 -DNDEBUG deque/ring_buffer/ring_buffer_benchmark.cpp -o deque/ring_buffer/ring_buffer_benchmark.exe
-./deque/ring_buffer/ring_buffer_benchmark.exe
+pacman -S $MINGW_PACKAGE_PREFIX-benchmark
 ```
+
+On Ubuntu/Debian it's `sudo apt install libbenchmark-dev`.
+
+Build with `-O2 -DNDEBUG` (unoptimised timings are meaningless) and link `-lbenchmark`. On Windows also link `-lshlwapi`. On Linux use `-lpthread` instead:
+
+```sh
+g++ -std=c++23 -O2 -DNDEBUG hashmap/open_map/open_map_benchmark.cpp -o hashmap/open_map/open_map_benchmark.exe -lbenchmark -lshlwapi
+g++ -std=c++23 -O2 -DNDEBUG "vector/O(1)_vector/O1_vec_benchmark.cpp" -o "vector/O(1)_vector/O1_vec_benchmark.exe" -lbenchmark -lshlwapi
+g++ -std=c++23 -O2 -DNDEBUG deque/ring_buffer/ring_buffer_benchmark.cpp -o deque/ring_buffer/ring_buffer_benchmark.exe -lbenchmark -lshlwapi
+```
+
+Quick check that a benchmark builds and runs (a few seconds, numbers are rough):
+
+```sh
+./deque/ring_buffer/ring_buffer_benchmark.exe --benchmark_min_time=0.01s
+```
+
+Full run. Repeats every benchmark 20 times, reports mean / median / stddev / cv, and interleaves the repetitions of the two containers so a noisy moment hits both:
+
+```sh
+./deque/ring_buffer/ring_buffer_benchmark.exe --benchmark_repetitions=20 --benchmark_report_aggregates_only=true --benchmark_enable_random_interleaving=true
+```
+
+Useful flags (they work on every benchmark):
+
+| flag | does |
+|:--|:--|
+| `--benchmark_filter=<regex>` | run only matching benchmarks, e.g. `--benchmark_filter=std::string` or `--benchmark_filter=^insert/` |
+| `--benchmark_min_time=2s` | run each benchmark for at least this long (default 0.5s) |
+| `--benchmark_out=results.json --benchmark_out_format=json` | also save results to a file (`csv` works too) |
+| `--benchmark_counters_tabular=true` | put counters (`per_op`, `p99.9_ns`, ...) in aligned columns |
+| `--benchmark_list_tests=true` | list benchmark names without running them |
+
+Benchmarks are named `<op>/<type>/<container>`, so each pair sits next to each other. `per_op` is the time of one call. Each file's header comment says exactly what every op measures. To build with a smaller data size for a fast smoke test, add `-DBENCH_N=4096`.
+
+The results tables below were measured with the earlier hand-written benchmark harness, before the move to Google Benchmark.
 
 ## Data structures
 
@@ -41,7 +70,7 @@ g++ -std=c++23 -O2 -DNDEBUG deque/ring_buffer/ring_buffer_benchmark.cpp -o deque
 | [`ring_buffer`](#ring_buffer) | [`deque/ring_buffer/ring_buffer.h`](deque/ring_buffer/ring_buffer.h) | `std::deque` |
 
 Shared: 
-- [`shared_utility/timer.h`](shared_utility/timer.h), a small `steady_clock` stopwatch used by the benchmarks.
+- [`shared_utility/timer.h`](shared_utility/timer.h), a small `steady_clock` stopwatch.
 - [`shared_utility/random.h`](shared_utility/random.h), basic namepsace allowing for the generation of random numbers. Used for testing purposes.
 - [`shared_utility/freer.h`](shared_utility/freer.h), a background thread that frees large arrays in batches. Used by `O1vector`.
 
