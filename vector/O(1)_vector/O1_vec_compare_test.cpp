@@ -6,16 +6,29 @@
 //   hold the same elements in the same order.
 //
 // Build & run:
-//   g++ -std=c++20 -Wall -g O1_vec_compare_test.cpp -o O1_vec_compare_test.exe
+//   g++ -std=c++20 -Wall -Wextra -g O1_vec_compare_test.cpp -o O1_vec_compare_test.exe
 //   ./O1_vec_compare_test.exe
 
+#include <algorithm>
 #include <format>
+#include <iterator>
+#include <numeric>
+#include <ranges>
+#include <span>
 #include <iostream>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include "O(1)_vector.h"
+
+// The iterator must satisfy the C++20 concepts, or std::ranges algorithms won't accept it.
+// These are compile time checks: if one fails the file doesn't build.
+static_assert(std::contiguous_iterator<O1vector<int>::const_iterator>);
+static_assert(std::ranges::contiguous_range<O1vector<int>>);
+static_assert(std::ranges::sized_range<O1vector<int>>);
+static_assert(std::ranges::contiguous_range<const O1vector<std::string>>);
+static_assert(std::is_same_v<std::iter_reference_t<O1vector<int>::iterator>, const int &>); // read-only
 
 // =====================================================================
 // Helpers
@@ -126,10 +139,29 @@ public:
                 return false;
             }
         }
+
+        // iterators must walk exactly the same elements, forwards and backwards.
+        // Runs after every operation, so this also covers mid-grow / mid-shrink.
+        if (!std::equal(m_mine.begin(), m_mine.end(), m_expected.begin(), m_expected.end()))
+        {
+            report("begin()..end() doesn't match std");
+            return false;
+        }
+        if (!std::equal(m_mine.rbegin(), m_mine.rend(), m_expected.rbegin(), m_expected.rend()))
+        {
+            report("rbegin()..rend() doesn't match std");
+            return false;
+        }
+        if (static_cast<size_t>(m_mine.end() - m_mine.begin()) != m_mine.size())
+        {
+            report("end() - begin() != size()");
+            return false;
+        }
         return true;
     }
 
     size_t size() const { return m_expected.size(); }
+    const O1vector<T> &mine() const { return m_mine; }
 
 private:
     O1vector<T> m_mine;
@@ -475,6 +507,157 @@ bool test_error_messages()
     return true;
 }
 
+// Range-for visits every element in order, also while a resize is running.
+bool test_range_for()
+{
+    O1vector<int> mine;
+    for (int i{0}; i < 1000; ++i)
+    {
+        mine.push(i);
+
+        int expected{0};
+        for (const int &x : mine)
+        {
+            CHECK(x == expected);
+            CHECK(&x == mine.at_ptr(static_cast<size_t>(expected))); // a reference into storage, not a copy
+            ++expected;
+        }
+        CHECK(expected == i + 1);
+    }
+
+    O1vector<int> empty;
+    for ([[maybe_unused]] int x : empty)
+    {
+        CHECK(false); // an empty vector must not run the loop body
+    }
+    CHECK(empty.begin() == empty.end());
+    CHECK(empty.rbegin() == empty.rend());
+    return true;
+}
+
+// Every operator a random access iterator needs gives the same answer as raw index maths.
+bool test_iterator_arithmetic()
+{
+    O1vector<int> mine;
+    for (int i{0}; i < 50; ++i)
+    {
+        mine.push(i * 2);
+    }
+
+    auto it = mine.begin();
+    CHECK(*it == 0);
+    CHECK(*(it + 10) == 20);
+    CHECK(*(10 + it) == 20);
+    CHECK(it[7] == 14);
+
+    auto copy = it++; // post-increment returns the old position
+    CHECK(*copy == 0);
+    CHECK(*it == 2);
+    CHECK(*++it == 4);
+    CHECK(*it-- == 4);
+    CHECK(*it == 2);
+    CHECK(*--it == 0);
+
+    it += 49;
+    CHECK(*it == 98);
+    it -= 9;
+    CHECK(*it == 80);
+    CHECK(*(it - 40) == 0);
+    CHECK(it - mine.begin() == 40);
+    CHECK(mine.begin() - it == -40);
+    CHECK(it + 10 == mine.end());
+
+    CHECK(mine.begin() < it);
+    CHECK(it > mine.begin());
+    CHECK(mine.begin() <= mine.begin());
+    CHECK(mine.end() >= it);
+    CHECK(mine.begin() != it);
+    CHECK((mine.begin() <=> mine.end()) < 0);
+
+    CHECK(mine.cbegin() == mine.begin());
+    CHECK(mine.cend() == mine.end());
+    CHECK(*mine.rbegin() == 98);
+    CHECK(*mine.crbegin() == 98);
+    CHECK(*(mine.rend() - 1) == 0);
+
+    O1vector<int>::const_iterator default_made{}; // default constructible, equal to other default ones
+    CHECK(default_made == O1vector<int>::const_iterator{});
+
+    O1vector<std::string> strings;
+    strings.push("hello");
+    CHECK(strings.begin()->size() == 5); // operator->
+    return true;
+}
+
+// Standard algorithms and ranges work, and the iterators are truly contiguous.
+bool test_std_algorithms()
+{
+    O1vector<int> mine;
+    std::vector<int> expected;
+    for (int i{0}; i < 777; ++i) // 777 so the vector is mid-resize when we start reading
+    {
+        mine.push(i % 37);
+        expected.push_back(i % 37);
+    }
+
+    CHECK(std::accumulate(mine.begin(), mine.end(), 0L) == std::accumulate(expected.begin(), expected.end(), 0L));
+    CHECK(std::count(mine.begin(), mine.end(), 5) == std::count(expected.begin(), expected.end(), 5));
+    CHECK(std::find(mine.begin(), mine.end(), 36) - mine.begin() == std::find(expected.begin(), expected.end(), 36) - expected.begin());
+    CHECK(*std::max_element(mine.begin(), mine.end()) == 36);
+    CHECK(std::distance(mine.begin(), mine.end()) == 777);
+
+    // C++20 ranges
+    CHECK(std::ranges::equal(mine, expected));
+    CHECK(std::ranges::find(mine, 10) - mine.begin() == 10);
+    CHECK(std::ranges::distance(mine) == 777);
+    CHECK(std::ranges::size(mine) == 777);
+
+    auto evens = mine | std::views::filter([](int x) { return x % 2 == 0; });
+    auto expected_evens = expected | std::views::filter([](int x) { return x % 2 == 0; });
+    CHECK(std::ranges::equal(evens, expected_evens));
+    CHECK(std::ranges::equal(mine | std::views::reverse, expected | std::views::reverse));
+
+    // copy out into a std::vector, then sort that copy (O1vector itself is read-only)
+    std::vector<int> copied(mine.begin(), mine.end());
+    CHECK(copied == expected);
+    std::ranges::sort(copied);
+    CHECK(std::ranges::is_sorted(copied));
+
+    // contiguous: std::span can view the storage directly, and to_address gives the real pointer
+    std::span<const int> view{mine.begin(), mine.end()};
+    CHECK(view.size() == mine.size());
+    CHECK(view.data() == mine.at_ptr(0));
+    CHECK(std::to_address(mine.begin() + 100) == mine.at_ptr(100));
+
+    // std::binary_search on a sorted O1vector
+    O1vector<int> sorted;
+    for (int i{0}; i < 500; ++i)
+    {
+        sorted.push(i * 3);
+    }
+    CHECK(std::binary_search(sorted.begin(), sorted.end(), 297));
+    CHECK(!std::binary_search(sorted.begin(), sorted.end(), 298));
+    CHECK(*std::ranges::lower_bound(sorted, 298) == 300);
+    return true;
+}
+
+// Iterators see values written by set() (set does not invalidate them).
+bool test_iterators_see_set()
+{
+    O1vector<int> mine;
+    for (int i{0}; i < 300; ++i)
+    {
+        mine.push(i);
+    }
+    auto it = mine.begin() + 5;
+    mine.set(5, -5);
+    CHECK(*it == -5);
+    mine.set(0, -1);
+    CHECK(*mine.begin() == -1);
+    CHECK(*std::ranges::min_element(mine) == -5);
+    return true;
+}
+
 // =====================================================================
 // Runner
 // =====================================================================
@@ -517,6 +700,10 @@ int main()
     run("out of bounds throws", test_out_of_bounds_throws);
     run("operator[]", test_index_operator);
     run("error messages", test_error_messages);
+    run("range for", test_range_for);
+    run("iterator arithmetic", test_iterator_arithmetic);
+    run("std algorithms", test_std_algorithms);
+    run("iterators see set", test_iterators_see_set);
 
     std::cout << '\n'
               << (g_failed == 0 ? "ALL PASSED" : std::format("{} TEST(S) FAILED", g_failed)) << '\n';
