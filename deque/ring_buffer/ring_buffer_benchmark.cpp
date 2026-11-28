@@ -1,59 +1,52 @@
-// Benchmark: ring_buffer vs std::deque.
+// Benchmark: ring_buffer vs std::deque, using Google Benchmark.
 //
 // Element types: int32_t, int64_t, std::string (24 random bytes, too long for SSO).
-// Every op is timed over N = 1,000,000 calls, PASSES times, and the MEDIAN pass is reported.
-// Both containers run in the same pass, one after the other, so a noisy moment hits both.
+// One benchmark iteration = N calls of one op (N = 1,000,000 unless built with -DBENCH_N=...).
+// "per_op" is the time of one call. The Time column is one iteration (all N calls).
 //
 // Ops (each on a fresh container, filled untimed when the op needs elements):
 //   push_back / push_front    empty -> N (includes every grow)
 //   push_back/front (rsv)     reserve(N), then empty -> N. reserve is inside the timed part.
-//                             std::deque has no reserve, so its rows are the plain pushes again.
+//                             ring_buffer only: std::deque has no reserve, so compare these
+//                             with std::deque's plain push_back / push_front rows.
 //   pop_back / pop_front      N -> empty
 //   index                     N reads at random indices
 //   front                     N reads of front()
 //   back                      N reads of back()
 //   take_back / take_front    read the end element (moved out), then pop it, N -> empty
-//   mixed (avg)               not timed itself: the plain average of the ops above
 //
-// Build with optimisation, -O0 numbers are meaningless (or use the "C++23: build file (release)" task):
-//   g++ -std=c++23 -O2 -DNDEBUG ring_buffer_benchmark.cpp -o ring_buffer_benchmark
+// Benchmarks are named <op>/<element type>/<container>, so the two containers sit next to each other.
+//
+// Build (needs Google Benchmark installed, see README.md):
+//   g++ -std=c++23 -O2 -DNDEBUG ring_buffer_benchmark.cpp -o ring_buffer_benchmark.exe -lbenchmark -lshlwapi
+//   (-lshlwapi is Windows only. On Linux use -lbenchmark -lpthread.)
+//
+// Full run, median of 20 repetitions, the two containers' repetitions interleaved so noise hits both:
+//   ./ring_buffer_benchmark.exe --benchmark_repetitions=20 --benchmark_report_aggregates_only=true
+//                               --benchmark_enable_random_interleaving=true
+// Quick check that everything runs:
+//   ./ring_buffer_benchmark.exe --benchmark_min_time=0.01s
 
-#include "../../shared_utility/random.h"
-#include "../../shared_utility/timer.h"
 #include "ring_buffer.h"
 
-#include <algorithm>
+#include <benchmark/benchmark.h>
+
 #include <cstdint>
-#include <cstdio>
 #include <deque>
+#include <optional>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
 
-constexpr std::size_t N = 1'000'000; // ops per pass
-constexpr int PASSES = 20;
+#ifndef BENCH_N
+#define BENCH_N 1'000'000
+#endif
+constexpr std::size_t N = BENCH_N; // calls per iteration
 
-// ---------- ops ----------
+// ---------- "read the element, then pop it" ----------
+// ring_buffer does both in one call, std::deque needs two.
 
-enum Op : std::uint8_t
-{
-    PUSH_BACK,
-    PUSH_FRONT,
-    PUSH_BACK_RSV,
-    PUSH_FRONT_RSV,
-    POP_BACK,
-    POP_FRONT,
-    INDEX,
-    FRONT,
-    BACK,
-    TAKE_BACK,
-    TAKE_FRONT,
-    NUM_OPS
-};
-constexpr const char *op_names[NUM_OPS]{"push_back", "push_front", "push_back (rsv)", "push_front (rsv)", "pop_back", "pop_front", "index",
-                                        "front", "back", "take_back", "take_front"};
-
-// "Read the element, then pop it". ring_buffer does both in one call, std::deque needs two.
 template <typename T>
 T take_back(ring_buffer<T> &c) { return c.pop_back_return(); }
 template <typename T>
@@ -74,28 +67,29 @@ T take_front(std::deque<T> &c)
     return x;
 }
 
-// reserve if the container has it (ring_buffer), otherwise nothing (std::deque)
-template <typename C>
-void reserve_if_possible(C &c, std::size_t n)
-{
-    if constexpr (requires { c.reserve(n); })
-        c.reserve(n);
-}
-
-// Tells the compiler x is used, so it can't skip the read or hoist it out of the loop.
-template <typename X>
-inline void keep(const X &x) { asm volatile("" : : "r,m"(x) : "memory"); }
-
 // ---------- data: the same values and indices are fed to both containers ----------
+
+// Fixed seed: every run of the benchmark sees the same data.
+inline std::mt19937_64 &gen()
+{
+    static std::mt19937_64 r{42};
+    return r;
+}
 
 template <typename T>
 T random_value();
 template <>
-std::int32_t random_value<std::int32_t>() { return random::i32(); }
+std::int32_t random_value<std::int32_t>() { return static_cast<std::int32_t>(gen()()); }
 template <>
-std::int64_t random_value<std::int64_t>() { return random::i64(); }
+std::int64_t random_value<std::int64_t>() { return static_cast<std::int64_t>(gen()()); }
 template <>
-std::string random_value<std::string>() { return random::string(24); }
+std::string random_value<std::string>()
+{
+    std::string s(24, '\0');
+    for (char &ch : s)
+        ch = static_cast<char>(gen()());
+    return s;
+}
 
 template <typename T>
 struct Data
@@ -104,26 +98,22 @@ struct Data
     std::vector<std::size_t> index; // N random indices in [0, N)
 };
 
+// Built once per element type, the first time a benchmark asks for it (not timed).
 template <typename T>
-Data<T> make_data()
+const Data<T> &data()
 {
-    Data<T> d;
-    for (std::size_t i = 0; i < N; ++i)
+    static const Data<T> d = []
     {
-        d.values.push_back(random_value<T>());
-        d.index.push_back(random::range<std::size_t>(0, N - 1));
-    }
+        Data<T> d;
+        std::uniform_int_distribution<std::size_t> dist{0, N - 1};
+        for (std::size_t i = 0; i < N; ++i)
+        {
+            d.values.push_back(random_value<T>());
+            d.index.push_back(dist(gen()));
+        }
+        return d;
+    }();
     return d;
-}
-
-// ---------- running ----------
-
-template <typename Fn>
-double time_ns_per_op(Fn fn)
-{
-    Timer t;
-    fn();
-    return t.elapsed() * 1e9 / N;
 }
 
 template <typename C, typename T>
@@ -135,106 +125,187 @@ C filled(const Data<T> &d)
     return c;
 }
 
-using Times = std::vector<double>[NUM_OPS]; // ns per op, one entry per pass
+// reserve if the container has it (ring_buffer), otherwise nothing (std::deque)
+template <typename C>
+void reserve_if_possible(C &c, std::size_t n)
+{
+    if constexpr (requires { c.reserve(n); })
+        c.reserve(n);
+}
 
-// One pass of every op on container type C.
+// Adds a "per_op" column: time of one call, as each iteration does N calls.
+void report_per_op(benchmark::State &st)
+{
+    st.counters["per_op"] = benchmark::Counter(static_cast<double>(N),
+                                               benchmark::Counter::kIsIterationInvariantRate | benchmark::Counter::kInvert);
+}
+
+// ---------- benchmarks ----------
+// Setup and teardown (filling, destroying) run inside PauseTiming / ResumeTiming, so they are not timed.
+// That pause costs well under a microsecond, which is nothing next to N calls.
+
+template <typename C, typename T, bool Front, bool Reserve>
+void BM_push(benchmark::State &st)
+{
+    const Data<T> &d = data<T>();
+    std::optional<C> c;
+    for (auto _ : st)
+    {
+        st.PauseTiming();
+        c.emplace();
+        st.ResumeTiming();
+
+        if constexpr (Reserve)
+            reserve_if_possible(*c, N);
+        for (const T &v : d.values)
+        {
+            if constexpr (Front)
+                c->push_front(v);
+            else
+                c->push_back(v);
+        }
+        benchmark::ClobberMemory();
+
+        st.PauseTiming();
+        c.reset(); // destroying N elements is not part of push
+        st.ResumeTiming();
+    }
+    report_per_op(st);
+}
+
+template <typename C, typename T, bool Front>
+void BM_pop(benchmark::State &st)
+{
+    const Data<T> &d = data<T>();
+    std::optional<C> c;
+    for (auto _ : st)
+    {
+        st.PauseTiming();
+        c.emplace(filled<C>(d));
+        st.ResumeTiming();
+
+        for (std::size_t i = 0; i < N; ++i)
+        {
+            if constexpr (Front)
+                c->pop_front();
+            else
+                c->pop_back();
+            benchmark::DoNotOptimize(*c); // stops the compiler merging N pops into one "size -= N"
+        }
+
+        st.PauseTiming();
+        c.reset();
+        st.ResumeTiming();
+    }
+    report_per_op(st);
+}
+
 template <typename C, typename T>
-void run_pass(const Data<T> &d, Times &t)
+void BM_index(benchmark::State &st)
 {
-    {
-        C c;
-        t[PUSH_BACK].push_back(time_ns_per_op([&]
-                                              { for (const T &v : d.values) c.push_back(v); }));
-    }
-    {
-        C c;
-        t[PUSH_FRONT].push_back(time_ns_per_op([&]
-                                               { for (const T &v : d.values) c.push_front(v); }));
-    }
-    {
-        C c;
-        t[PUSH_BACK_RSV].push_back(time_ns_per_op([&]
-                                                  { reserve_if_possible(c, N); for (const T &v : d.values) c.push_back(v); }));
-    }
-    {
-        C c;
-        t[PUSH_FRONT_RSV].push_back(time_ns_per_op([&]
-                                                   { reserve_if_possible(c, N); for (const T &v : d.values) c.push_front(v); }));
-    }
-    {
-        C c = filled<C>(d);
-        // keep(c) stops the compiler merging N pops into one "size -= N"
-        t[POP_BACK].push_back(time_ns_per_op([&]
-                                             { for (std::size_t i = 0; i < N; ++i) { c.pop_back(); keep(c); } }));
-    }
-    {
-        C c = filled<C>(d);
-        t[POP_FRONT].push_back(time_ns_per_op([&]
-                                              { for (std::size_t i = 0; i < N; ++i) { c.pop_front(); keep(c); } }));
-    }
-    {
-        C c = filled<C>(d);
-        t[INDEX].push_back(time_ns_per_op([&]
-                                          { for (std::size_t i : d.index) keep(c[i]); }));
-        t[FRONT].push_back(time_ns_per_op([&]
-                                          { for (std::size_t i = 0; i < N; ++i) keep(c.front()); }));
-        t[BACK].push_back(time_ns_per_op([&]
-                                         { for (std::size_t i = 0; i < N; ++i) keep(c.back()); }));
-    }
-    {
-        C c = filled<C>(d);
-        t[TAKE_BACK].push_back(time_ns_per_op([&]
-                                              { for (std::size_t i = 0; i < N; ++i) keep(take_back(c)); }));
-    }
-    {
-        C c = filled<C>(d);
-        t[TAKE_FRONT].push_back(time_ns_per_op([&]
-                                               { for (std::size_t i = 0; i < N; ++i) keep(take_front(c)); }));
-    }
+    const Data<T> &d = data<T>();
+    C c = filled<C>(d); // read-only, so one fill is enough for every iteration
+    for (auto _ : st)
+        for (std::size_t i : d.index)
+            benchmark::DoNotOptimize(c[i]);
+    report_per_op(st);
 }
 
-double median(std::vector<double> v)
+template <typename C, typename T>
+void BM_front(benchmark::State &st)
 {
-    std::sort(v.begin(), v.end());
-    return v[v.size() / 2];
+    C c = filled<C>(data<T>());
+    for (auto _ : st)
+        for (std::size_t i = 0; i < N; ++i)
+            benchmark::DoNotOptimize(c.front());
+    report_per_op(st);
 }
 
+template <typename C, typename T>
+void BM_back(benchmark::State &st)
+{
+    C c = filled<C>(data<T>());
+    for (auto _ : st)
+        for (std::size_t i = 0; i < N; ++i)
+            benchmark::DoNotOptimize(c.back());
+    report_per_op(st);
+}
+
+template <typename C, typename T, bool Front>
+void BM_take(benchmark::State &st)
+{
+    const Data<T> &d = data<T>();
+    std::optional<C> c;
+    for (auto _ : st)
+    {
+        st.PauseTiming();
+        c.emplace(filled<C>(d));
+        st.ResumeTiming();
+
+        for (std::size_t i = 0; i < N; ++i)
+        {
+            if constexpr (Front)
+                benchmark::DoNotOptimize(take_front(*c));
+            else
+                benchmark::DoNotOptimize(take_back(*c));
+        }
+
+        st.PauseTiming();
+        c.reset();
+        st.ResumeTiming();
+    }
+    report_per_op(st);
+}
+
+// ---------- registration ----------
+
+using BenchFn = void (*)(benchmark::State &);
+
+void add(const std::string &op, const char *type_name, const char *container, BenchFn fn)
+{
+    const std::string name = op + "/" + type_name + "/" + container;
+    benchmark::RegisterBenchmark(name.c_str(), fn)->Unit(benchmark::kMillisecond);
+}
+
+// Registers every op for element type T, ring_buffer then std::deque for each op.
 template <typename T>
-void bench(const char *type_name)
+void add_all(const char *t)
 {
-    std::printf("\n== %s ==\n", type_name);
-    const Data<T> d = make_data<T>();
+    using R = ring_buffer<T>;
+    using D = std::deque<T>;
 
-    Times ring{}, deque{};
-    for (int p = 0; p < PASSES; ++p)
-    {
-        std::printf("\r  pass %d/%d   ", p + 1, PASSES);
-        std::fflush(stdout);
-        run_pass<ring_buffer<T>>(d, ring);
-        run_pass<std::deque<T>>(d, deque);
-    }
-
-    std::printf("\r  %-17s %14s %14s %10s\n", "op (ns/op)", "ring_buffer", "std::deque", "speedup");
-    double r_sum = 0, q_sum = 0;
-    for (int op = 0; op < NUM_OPS; ++op)
-    {
-        const double r = median(ring[op]);
-        const double q = median(deque[op]);
-        r_sum += r;
-        q_sum += q;
-        std::printf("  %-17s %14.2f %14.2f %9.2fx\n", op_names[op], r, q, q / r);
-    }
-    const double r = r_sum / int{NUM_OPS}, q = q_sum / int{NUM_OPS};
-    std::printf("  %-17s %14.2f %14.2f %9.2fx\n", "mixed (avg)", r, q, q / r);
+    add("push_back", t, "ring_buffer", BM_push<R, T, false, false>);
+    add("push_back", t, "std::deque", BM_push<D, T, false, false>);
+    add("push_front", t, "ring_buffer", BM_push<R, T, true, false>);
+    add("push_front", t, "std::deque", BM_push<D, T, true, false>);
+    add("push_back_rsv", t, "ring_buffer", BM_push<R, T, false, true>);
+    add("push_front_rsv", t, "ring_buffer", BM_push<R, T, true, true>);
+    add("pop_back", t, "ring_buffer", BM_pop<R, T, false>);
+    add("pop_back", t, "std::deque", BM_pop<D, T, false>);
+    add("pop_front", t, "ring_buffer", BM_pop<R, T, true>);
+    add("pop_front", t, "std::deque", BM_pop<D, T, true>);
+    add("index", t, "ring_buffer", BM_index<R, T>);
+    add("index", t, "std::deque", BM_index<D, T>);
+    add("front", t, "ring_buffer", BM_front<R, T>);
+    add("front", t, "std::deque", BM_front<D, T>);
+    add("back", t, "ring_buffer", BM_back<R, T>);
+    add("back", t, "std::deque", BM_back<D, T>);
+    add("take_back", t, "ring_buffer", BM_take<R, T, false>);
+    add("take_back", t, "std::deque", BM_take<D, T, false>);
+    add("take_front", t, "ring_buffer", BM_take<R, T, true>);
+    add("take_front", t, "std::deque", BM_take<D, T, true>);
 }
 
-int main()
+int main(int argc, char **argv)
 {
-    std::printf("N = %zu ops per pass, %d passes, median pass shown.\n", N, PASSES);
-    std::printf("speedup = deque time / ring_buffer time. Above 1x means ring_buffer is faster.\n");
+    add_all<std::int32_t>("int32_t");
+    add_all<std::int64_t>("int64_t");
+    add_all<std::string>("std::string");
 
-    bench<std::int32_t>("int32_t");
-    bench<std::int64_t>("int64_t");
-    bench<std::string>("std::string");
+    benchmark::Initialize(&argc, argv);
+    if (benchmark::ReportUnrecognizedArguments(argc, argv))
+        return 1;
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
     return 0;
 }
