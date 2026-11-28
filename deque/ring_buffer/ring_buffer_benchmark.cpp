@@ -91,11 +91,11 @@ inline void keep(const X &x) { asm volatile("" : : "r,m"(x) : "memory"); }
 template <typename T>
 T random_value();
 template <>
-std::int32_t random_value<std::int32_t>() { return random::i32(); }
+std::int32_t random_value<std::int32_t>() { return rng::i32(); }
 template <>
-std::int64_t random_value<std::int64_t>() { return random::i64(); }
+std::int64_t random_value<std::int64_t>() { return rng::i64(); }
 template <>
-std::string random_value<std::string>() { return random::string(24); }
+std::string random_value<std::string>() { return rng::string(24); }
 
 template <typename T>
 struct Data
@@ -111,7 +111,7 @@ Data<T> make_data()
     for (std::size_t i = 0; i < N; ++i)
     {
         d.values.push_back(random_value<T>());
-        d.index.push_back(random::range<std::size_t>(0, N - 1));
+        d.index.push_back(rng::range<std::size_t>(0, N - 1));
     }
     return d;
 }

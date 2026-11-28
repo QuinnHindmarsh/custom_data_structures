@@ -42,7 +42,7 @@ g++ -std=c++23 -O2 -DNDEBUG deque/ring_buffer/ring_buffer_benchmark.cpp -o deque
 
 Shared: 
 - [`shared_utility/timer.h`](shared_utility/timer.h), a small `steady_clock` stopwatch used by the benchmarks.
-- [`shared_utility/random.h`](shared_utility/random.h), basic namepsace allowing for the generation of random numbers. Used for testing purposes.
+- [`shared_utility/random.h`](shared_utility/random.h), basic namespace (`rng`) allowing for the generation of random numbers. Used for testing purposes.
 - [`shared_utility/freer.h`](shared_utility/freer.h), a background thread that frees large arrays in batches. Used by `O1vector`.
 
 
