@@ -6,6 +6,8 @@
 #include <map>
 #include <functional>
 #include <string>
+#include <stdexcept>
+#include <vector>
 #include "../../shared_utility/random.h"
 
 template <typename T>
@@ -191,11 +193,120 @@ public:
         check();
     }
 
-    // Swap rb for a copy of itself, so the next operations run on a copy-constructed buffer
+    // Swap rb for a copy of itself, so the next operations run on a copy-constructed buffer.
+    // The right side is a temporary, so this now goes through move assignment.
     void replace_with_copy()
     {
         rb = ring_buffer<T>(rb);
 
+        ++operations;
+        check();
+    }
+
+    // Move rb out and back. The moved-from buffer must be empty and still usable.
+    void move_construct(const T &value)
+    {
+        ring_buffer<T> moved(std::move(rb));
+        compare(moved, "move_construct - moved to");
+        if (!rb.empty() || rb.capacity() != 0)
+            report_mismatch("move_construct - moved from not empty");
+
+        // moved-from must still work: push grows it from capacity 0
+        rb.push_back(value);
+        rb.push_front(value);
+        if (rb.size() != 2 || rb.front() != value || rb.back() != value)
+            report_mismatch("move_construct - moved from not usable");
+
+        rb = std::move(moved); // move assign over a non-empty buffer
+        ++operations;
+        check();
+    }
+
+    // Move assign over a buffer with contents, plus self move
+    void move_assign(const T &value)
+    {
+        ring_buffer<T> other;
+        other.push_back(value);
+        other = std::move(rb);
+        compare(other, "move_assign - assigned to");
+
+        rb = std::move(other);
+        ring_buffer<T> &self = rb;
+        rb = std::move(self); // must not lose the contents
+
+        ++operations;
+        check();
+    }
+
+    // Read the same index with at() and [], and check at() throws one past the end
+    void at(size_t idx)
+    {
+        const ring_buffer<T> &crb = rb;
+        if (rb.at(idx) != dq.at(idx) || crb.at(idx) != dq[idx] || &rb.at(idx) != &rb[idx])
+            report_mismatch("at - value");
+
+        bool threw = false;
+        try
+        {
+            (void)rb.at(rb.size());
+        }
+        catch (const std::out_of_range &)
+        {
+            threw = true;
+        }
+        if (!threw)
+            report_mismatch("at - no throw at size()");
+        ++operations;
+    }
+
+    // emplace returns a reference to the new element
+    void emplace_back(const T &value)
+    {
+        T &r = rb.emplace_back(value);
+        dq.emplace_back(value);
+        if (&r != &rb.back() || r != value)
+            report_mismatch("emplace_back - returned reference");
+        ++operations;
+        check_maybe();
+    }
+
+    void emplace_front(const T &value)
+    {
+        T &r = rb.emplace_front(value);
+        dq.emplace_front(value);
+        if (&r != &rb.front() || r != value)
+            report_mismatch("emplace_front - returned reference");
+        ++operations;
+        check_maybe();
+    }
+
+    // Push an element of rb into rb itself. When rb is full this grows, and the argument
+    // points into the old storage that grow frees.
+    void push_self_back()
+    {
+        T front = dq.front();
+        rb.push_back(rb.front());
+        dq.push_back(front);
+        ++operations;
+        check_maybe();
+    }
+
+    void push_self_front()
+    {
+        T back = dq.back();
+        rb.push_front(rb.back());
+        dq.push_front(back);
+        ++operations;
+        check_maybe();
+    }
+
+    void clear()
+    {
+        size_t cap = rb.capacity();
+        rb.clear();
+        dq.clear();
+        if (rb.capacity() != cap)
+            report_mismatch("clear - capacity changed");
         ++operations;
         check();
     }
@@ -229,7 +340,7 @@ void fail(std::string_view msg)
 template <typename T>
 using Op = std::function<void(Both<T> &)>;
 
-// gen: any function that takes nothing and returns a T, e.g. random::get_i32
+// gen: any function that takes nothing and returns a T, e.g. rng::get_i32
 template <typename T, typename Gen>
 std::map<std::string, Op<T>> make_operations(Gen gen)
 {
@@ -256,13 +367,13 @@ std::map<std::string, Op<T>> make_operations(Gen gen)
          {
              if (b.size() == 0)
                  return;
-             size_t idx = random::range<size_t>(0, b.size() - 1);
+             size_t idx = rng::range<size_t>(0, b.size() - 1);
              b.modify_midle(idx, gen());
          }},
 
         // up to 2x the current size, so some calls are below capacity (must do nothing) and some grow
         {"reserve", [](Both<T> &b)
-         { b.reserve(random::range<size_t>(0, b.size() * 2 + 8)); }},
+         { b.reserve(rng::range<size_t>(0, b.size() * 2 + 8)); }},
 
         {"copy_construct", [gen](Both<T> &b)
          { b.copy_construct(gen()); }},
@@ -272,6 +383,31 @@ std::map<std::string, Op<T>> make_operations(Gen gen)
 
         {"replace_with_copy", [](Both<T> &b)
          { b.replace_with_copy(); }},
+
+        {"move_construct", [gen](Both<T> &b)
+         { b.move_construct(gen()); }},
+
+        {"move_assign", [gen](Both<T> &b)
+         { b.move_assign(gen()); }},
+
+        {"at", [](Both<T> &b)
+         { if (b.size() > 0) b.at(rng::range<size_t>(0, b.size() - 1)); }},
+
+        {"emplace_back", [gen](Both<T> &b)
+         { b.emplace_back(gen()); }},
+
+        {"emplace_front", [gen](Both<T> &b)
+         { b.emplace_front(gen()); }},
+
+        {"push_self_back", [](Both<T> &b)
+         { if (b.size() > 0) b.push_self_back(); }},
+
+        {"push_self_front", [](Both<T> &b)
+         { if (b.size() > 0) b.push_self_front(); }},
+
+        // rare, otherwise buffers never get big
+        {"clear", [](Both<T> &b)
+         { if (rng::range<int>(0, 49) == 0) b.clear(); }},
     };
 }
 
@@ -283,23 +419,23 @@ void run_random(Gen gen, int N, int M)
 
     for (int i{0}; i < M; ++i)
     {
-        Both<T> both(random::range<size_t>(0, static_cast<size_t>(N + 1)));
+        Both<T> both(rng::range<size_t>(0, static_cast<size_t>(N + 1)));
         for (int j{0}; j < N; ++j)
         {
-            auto it = std::next(ops.begin(), random::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
+            auto it = std::next(ops.begin(), rng::range<std::ptrdiff_t>(0, std::ssize(ops) - 1));
             it->second(both); // call it
         }
         both.check();
     }
 }
 
-void test_int32(int N, int M) { run_random<int32_t>(random::i32, N, M); }
-void test_uint64(int N, int M) { run_random<uint64_t>(random::u64, N, M); }
+void test_int32(int N, int M) { run_random<int32_t>(rng::i32, N, M); }
+void test_uint64(int N, int M) { run_random<uint64_t>(rng::u64, N, M); }
 
 void test_string(int N, int M)
 {
     run_random<std::string>([]
-                            { return random::string(random::range<size_t>(0, 32)); },
+                            { return rng::string(rng::range<size_t>(0, 32)); },
                             N, M);
 }
 
@@ -395,15 +531,127 @@ void test_destructor(int N, int M)
     for (int i{0}; i < M; ++i)
     {
         run_random<Tracked>([]
-                            { return Tracked{random::i64()}; },
+                            { return Tracked{rng::i64()}; },
                             N, 1);
         if (Tracked::live != 0)
             fail(std::format("destructor - round {} left {} live objects", i, Tracked::live));
     }
 }
 
+// Compile time checks: moves exist and are noexcept, so std::vector<ring_buffer> moves instead of copying on grow
+static_assert(std::is_nothrow_move_constructible_v<ring_buffer<std::string>>);
+static_assert(std::is_nothrow_move_assignable_v<ring_buffer<std::string>>);
+static_assert(std::is_nothrow_swappable_v<ring_buffer<std::string>>);
+static_assert(std::is_same_v<ring_buffer<int>::value_type, int>);
+
+// Moving must steal the buffer: no element is copied or moved, and the source ends up empty
+void test_move()
+{
+    {
+        ring_buffer<Tracked> a;
+        for (int i{0}; i < 10; ++i)
+            a.push_back(Tracked{i});
+        const Tracked *first = &a.front();
+
+        ring_buffer<Tracked> b(std::move(a));
+        if (&b.front() != first || b.size() != 10 || !a.empty() || Tracked::live != 10)
+            fail("move ctor - did not steal the buffer");
+
+        ring_buffer<Tracked> c{Tracked{99}};
+        c = std::move(b); // c's old element must be destroyed
+        if (&c.front() != first || c.size() != 10 || !b.empty() || Tracked::live != 10)
+            fail("move assign - did not steal the buffer");
+
+        // copying a moved-from buffer gives an empty, usable buffer
+        ring_buffer<Tracked> d(a);
+        d.push_back(Tracked{1});
+        if (d.size() != 1)
+            fail("copy of moved-from - not usable");
+    }
+    if (Tracked::live != 0)
+        fail(std::format("move - left {} live Tracked", Tracked::live));
+
+    // the reason noexcept matters: std::vector moves ring_buffers when it grows, so element addresses survive
+    std::vector<ring_buffer<int>> v;
+    v.emplace_back(ring_buffer<int>{1, 2, 3});
+    const int *p = &v[0].front();
+    for (int i{0}; i < 100; ++i)
+        v.emplace_back();
+    if (&v[0].front() != p)
+        fail("vector<ring_buffer> - copied instead of moved on grow");
+
+    // free swap is found by `using std::swap; swap(a, b)`
+    ring_buffer<int> x{1, 2}, y{3};
+    using std::swap;
+    swap(x, y);
+    if (x.size() != 1 || x[0] != 3 || y.size() != 2 || y[1] != 2)
+        fail("swap - wrong contents");
+}
+
+void test_at_emplace_clear()
+{
+    ring_buffer<std::pair<int, std::string>> rb;
+    auto &e = rb.emplace_back(1, "one"); // built in place from the pair's constructor arguments
+    rb.emplace_front(0, "zero");
+    if (e.second != "one" || rb.at(0).first != 0 || rb.at(1).second != "one")
+        fail("emplace - wrong contents");
+
+    bool threw = false;
+    try
+    {
+        (void)rb.at(2);
+    }
+    catch (const std::out_of_range &)
+    {
+        threw = true;
+    }
+    if (!threw)
+        fail("at - did not throw");
+
+    rb.clear();
+    if (!rb.empty() || rb.capacity() != 2)
+        fail("clear - not empty or capacity changed");
+    rb.emplace_back(5, "five");
+    if (rb.size() != 1 || rb.front().first != 5)
+        fail("clear - not usable after");
+
+    ring_buffer<int> a{1, 2, 3};
+    ring_buffer<int> b(16);
+    b.push_front(1);
+    b.push_back(2);
+    b.push_back(3);
+    if (a != b || a == ring_buffer<int>{1, 2})
+        fail("operator== - wrong result");
+}
+
+// push_back(rb.front()) on a full buffer: the argument lives in storage grow() frees
+void test_self_push()
+{
+    for (int round{0}; round < 2; ++round)
+    {
+        ring_buffer<std::string> rb(1);
+        rb.push_back(std::string(40, 'a'));
+        for (int i{0}; i < 10; ++i)
+        {
+            if (round == 0)
+                rb.push_back(rb.front());
+            else
+                rb.push_front(rb.back());
+        }
+        for (size_t i{0}; i < rb.size(); ++i)
+            if (rb[i] != std::string(40, 'a'))
+                fail("self push - wrong contents");
+    }
+}
+
 int main()
 {
+    test_move();
+    std::cout << "test_move passed\n";
+    test_at_emplace_clear();
+    std::cout << "test_at_emplace_clear passed\n";
+    test_self_push();
+    std::cout << "test_self_push passed\n";
     test_constructor();
     std::cout << "test_constructor passed\n";
     test_initializer_list();

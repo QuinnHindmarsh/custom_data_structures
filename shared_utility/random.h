@@ -6,7 +6,7 @@
 #include <string>
 #include <type_traits>
 
-namespace random
+namespace rng
 {
     inline std::seed_seq generate_seed()
     {
