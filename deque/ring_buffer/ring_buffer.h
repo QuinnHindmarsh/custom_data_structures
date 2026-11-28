@@ -8,6 +8,7 @@
 #include <memory>
 #include <cstring>
 #include <type_traits>
+#include <initializer_list>
 
 /*
 TODO:
@@ -27,6 +28,21 @@ public:
     // & m_mask only works if capacity is a power of 2, so round up (0 becomes 1)
     explicit ring_buffer(size_t inital_capacity = 2) : m_capacitty(std::bit_ceil(inital_capacity)), m_data{m_alloc.allocate(m_capacitty)}, m_mask{m_capacitty - 1} {}
 
+    ring_buffer(std::initializer_list<T> list) : ring_buffer(list.size())
+    {
+        touch_pages(m_capacitty, m_data);
+
+        m_tail = list.size();
+        if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            std::memcpy(m_data, list.begin(), list.size() * sizeof(T));
+        }
+        else
+        {
+            std::uninitialized_copy(list.begin(), list.end(), m_data);
+        }
+    }
+
     ring_buffer(const ring_buffer &source) :
 
                                              m_capacitty{source.m_capacitty},
@@ -41,14 +57,7 @@ public:
         size_t first{std::min(n, m_capacitty - h)};
         size_t second{n - first};
 
-        // The OS only maps RAM to a page on its first write. Touch every page now, front to back,
-        // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
-        // volatile stops the compiler deleting these writes, since nothing reads them.
-        auto *bytes = reinterpret_cast<volatile char *>(m_data);
-        for (size_t off = 0; off < m_capacitty * sizeof(T); off += 4096)
-        {
-            bytes[off] = 0;
-        }
+        touch_pages(m_capacitty, m_data);
 
         if constexpr (std::is_trivially_copyable_v<T>)
         {
@@ -207,6 +216,18 @@ private:
     size_t m_head{0}; // index of first element
     size_t m_tail{0}; // index of after last element
 
+    void touch_pages(size_t capacity, T *data)
+    {
+        // The OS only maps RAM to a page on its first write. Touch every page now, front to back,
+        // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
+        // volatile stops the compiler deleting these writes, since nothing reads them.
+        auto *bytes = reinterpret_cast<volatile char *>(data);
+        for (size_t off = 0; off < capacity * sizeof(T); off += 4096)
+        {
+            bytes[off] = 0;
+        }
+    }
+
     [[gnu::noinline]] void grow(size_t new_capacity)
     {
         T *new_data = m_alloc.allocate(new_capacity);
@@ -215,14 +236,7 @@ private:
         size_t first{std::min(n, m_capacitty - h)};
         size_t second{n - first};
 
-        // The OS only maps RAM to a page on its first write. Touch every page now, front to back,
-        // otherwise push_front faults them in backwards one at a time, which is ~2x slower.
-        // volatile stops the compiler deleting these writes, since nothing reads them.
-        auto *bytes = reinterpret_cast<volatile char *>(new_data);
-        for (size_t off = 0; off < new_capacity * sizeof(T); off += 4096)
-        {
-            bytes[off] = 0;
-        }
+        touch_pages(new_capacity, new_data);
 
         if constexpr (std::is_trivially_copyable_v<T>)
         {
