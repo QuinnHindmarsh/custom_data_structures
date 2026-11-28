@@ -28,7 +28,7 @@ template <typename T>
 class O1vector
 {
 public:
-    explicit O1vector(size_t capacity = 1) : m_capacity{capacity}, m_cur{new T[m_capacity]}
+    explicit O1vector(size_t capacity = 1) : m_capacity{capacity >= 1 ? capacity : 1}, m_cur{new T[m_capacity]}
     {
         assert(m_grow_at_denom < m_shrink_at_denom); // shrink point c/8 must sit below grow point c/2
         update_threasholds();
