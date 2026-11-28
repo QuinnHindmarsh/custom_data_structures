@@ -78,6 +78,7 @@ public:
     //   insert -> key and value are copied (lvalue) or moved (rvalue) straight into the new slot
     template <typename KArg, typename VArg>
         requires std::constructible_from<K, KArg> && std::constructible_from<V, VArg> && std::assignable_from<V &, VArg>
+
     void insert(KArg &&key, VArg &&value)
     {
         if constexpr (!std::same_as<std::remove_cvref_t<KArg>, K>)
@@ -96,17 +97,18 @@ public:
                 return;
             }
 
+            slot_t s = make_slot(std::forward<KArg>(key), std::forward<VArg>(value), h, 1);
             // probe_distance == 0 means the key would need a DIB > max_dib at existing_idx
             if (m_size + 1 > m_grow_at || probe_distance > max_dib)
             {
                 // rehashing makes the existing index and probe distance no longer valid
                 rehash(m_capacity * resize_factor);
-                insert_no_check(make_slot(std::forward<KArg>(key), std::forward<VArg>(value), h, 1), index_from_hash(h));
+                insert_no_check(std::move(s), index_from_hash(h));
                 ++m_size;
                 return;
             }
 
-            insert_no_check(make_slot(std::forward<KArg>(key), std::forward<VArg>(value), h, probe_distance), existing_idx);
+            insert_no_check(make_slot(std::move(s), existing_idx);
             ++m_size;
         }
     }
